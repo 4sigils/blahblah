@@ -337,6 +337,39 @@ function GalaxLib:CreateWindow(opts)
     -- ── Settings tab (auto-built) ─────────────────────────────────────────
     function WIN:_buildSettings()
         local ST={_name="Settings",_sections={},_win=self,_isSettings=true}
+        -- Give Settings tab a real AddSection so external code can inject sections
+        local winRef=self
+        function ST:AddSection(sname)
+            local SEC={_name=sname,_widgets={},_win=winRef,_collapsed=false}
+            local function reg(w) table.insert(SEC._widgets,w) end
+            function SEC:AddToggle(label,default,cb)
+                local it={type="toggle",label=label,value=default or false,cb=cb or function()end,_anim=default and 1 or 0}
+                reg(it); it.cb(it.value)
+                return{Get=function()return it.value end,Set=function(_,v)it.value=v;it.cb(v)end}
+            end
+            function SEC:AddButton(label,cb,color)
+                reg({type="button",label=label,cb=cb or function()end,color=color}); return{}
+            end
+            function SEC:AddDropdown(label,options,default,opts2,cb)
+                if type(opts2)=="function" then cb=opts2; opts2={} end; opts2=opts2 or {}
+                local it={type="dropdown",label=label,options=options or {},value=default or (options and options[1]) or "",maxVisible=opts2.MaxVisible or 6,scroll=0,cb=cb or function()end,_search="",_sfocus=false}
+                reg(it); it.cb(it.value)
+                return{Get=function()return it.value end,Set=function(_,v)it.value=v;it.cb(v)end}
+            end
+            function SEC:AddTextbox(label,default,cb,placeholder)
+                local it={type="textbox",label=label,value=default or "",cb=cb or function()end,placeholder=placeholder or ("Enter "..label.."...")}
+                reg(it)
+                return{Get=function()return it.value end,Set=function(_,v)it.value=v;it.cb(v)end}
+            end
+            function SEC:AddLabel(text,color)
+                local it={type="label",label=text or "",color=color}; reg(it)
+                return{Get=function()return it.label end,Set=function(_,v)it.label=v end}
+            end
+            function SEC:AddSeparator()
+                reg({type="separator"}); return{}
+            end
+            table.insert(ST._sections,SEC); return SEC
+        end
         local SM={_name="Menu",_widgets={},_win=self,_collapsed=false}
         table.insert(SM._widgets,{type="settings_keybind",label="Toggle Key",listening=false})
         table.insert(SM._widgets,{type="settings_kill",label="Kill Script"})
