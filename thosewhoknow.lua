@@ -406,9 +406,12 @@ function GalaxLib:CreateWindow(opts)
         local hasSB=(total>it.maxVisible)
         local optW=hasSB and (iW-SBW-SBP*2) or iW
 
-        local listPos=ddPos+Vector2.new(0,ddSz.Y+2)
         local sbH_px=28
         local listH=math.min(maxV,total)*optH+4+sbH_px
+        -- open upward if the list would overflow the window bottom
+        local winBottom=self._pos.Y+self.Size.Y-8
+        local openDown=(ddPos.Y+ddSz.Y+2+listH <= winBottom)
+        local listPos=openDown and (ddPos+Vector2.new(0,ddSz.Y+2)) or (ddPos-Vector2.new(0,listH+2))
 
         poolAdd(pool,wid.."_dll", "Square",{Position=listPos,Size=Vector2.new(iW,listH),Filled=true, Color=T.Surface0,Visible=true,ZIndex=20})
         poolAdd(pool,wid.."_dlb", "Square",{Position=listPos,Size=Vector2.new(iW,listH),Filled=false,Color=T.Accent, Thickness=1,Visible=true,ZIndex=21})
@@ -567,7 +570,10 @@ function GalaxLib:CreateWindow(opts)
             local ddP=Vector2.new(wx,wy+14); local ddS=Vector2.new(iW,22)
             local isOpen=(self._openDropId==it._sid)
             local estListH=(math.min(it.maxVisible,#it.options)*20+4+28)
-            local lPos=ddP+Vector2.new(0,ddS.Y+2); local lSz=Vector2.new(iW,estListH)
+            local winBottom2=self._pos.Y+self.Size.Y-8
+            local _openDown2=(ddP.Y+ddS.Y+2+estListH <= winBottom2)
+            local lPos=_openDown2 and (ddP+Vector2.new(0,ddS.Y+2)) or (ddP-Vector2.new(0,estListH+2))
+            local lSz=Vector2.new(iW,estListH)
 
             local disp
             if multi then
