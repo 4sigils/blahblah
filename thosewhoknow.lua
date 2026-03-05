@@ -125,9 +125,11 @@ local _mouse1 = false
 pcall(function()
     local UIS = game:GetService("UserInputService")
     UIS.InputBegan:Connect(function(inp)
+        if not inp or not inp.UserInputType then return end
         if inp.UserInputType == Enum.UserInputType.MouseButton1 then _mouse1 = true end
     end)
     UIS.InputEnded:Connect(function(inp)
+        if not inp or not inp.UserInputType then return end
         if inp.UserInputType == Enum.UserInputType.MouseButton1 then _mouse1 = false end
     end)
 end)
@@ -136,6 +138,7 @@ local Input={_prev={},click=false,held=false,scroll=0}
 pcall(function()
     local UIS = game:GetService("UserInputService")
     UIS.InputChanged:Connect(function(inp)
+        if not inp or not inp.UserInputType then return end
         if inp.UserInputType == Enum.UserInputType.MouseWheel then
             _scrollDelta = _scrollDelta + (inp.Position.Z > 0 and -1 or 1)
         end
@@ -156,11 +159,13 @@ local _keysHeld = {}
 pcall(function()
     local UIS = game:GetService("UserInputService")
     UIS.InputBegan:Connect(function(inp)
+        if not inp or not inp.UserInputType then return end
         if inp.UserInputType == Enum.UserInputType.Keyboard then
             _keysHeld[inp.KeyCode.Value] = true
         end
     end)
     UIS.InputEnded:Connect(function(inp)
+        if not inp or not inp.UserInputType then return end
         if inp.UserInputType == Enum.UserInputType.Keyboard then
             _keysHeld[inp.KeyCode.Value] = false
         end
