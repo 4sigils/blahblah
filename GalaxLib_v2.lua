@@ -106,7 +106,7 @@ local function keyName(kc) return KeyNames[kc] or ("0x"..string.format("%X",kc o
 local function clamp(x,a,b) return x<a and a or (x>b and b or x) end
 local function lerp(a,b,t)  return a+(b-a)*clamp(t,0,1) end
 local function lerpC(a,b,t) return Color3.new(lerp(a.R,b.R,t),lerp(a.G,b.G,t),lerp(a.B,b.B,t)) end
-local function textW(s,sz)  return #(s or "")*(sz or 13)*0.54 end
+local function textW(s,sz)  return #(s or "")*(sz or 13)*0.6 end
 local function mpos()
     local lp=game:GetService("Players").LocalPlayer
     if lp then local m=lp:GetMouse(); if m then return Vector2.new(m.X,m.Y) end end
@@ -502,7 +502,8 @@ function GalaxLib:CreateWindow(opts)
             end
             poolAdd(pool,wid.."_btn", "Square",{Position=bp,Size=bs,Filled=true, Color=bgC,Visible=true,ZIndex=6})
             poolAdd(pool,wid.."_btnb","Square",{Position=bp,Size=bs,Filled=false,Color=bdC,Thickness=1,Visible=true,ZIndex=7})
-            poolAdd(pool,wid.."_btnt","Text",{Position=Vector2.new(wx+iW/2,wy+math.floor((BTN_H-13)/2)),Text=it.label,Size=13,Font=FONT,Color=T.Text,Center=true,Outline=false,Visible=true,ZIndex=7})
+            local _bw=textW(it.label,13)
+            poolAdd(pool,wid.."_btnt","Text",{Position=Vector2.new(wx+iW/2-_bw/2,wy+5),Text=it.label,Size=13,Font=FONT,Color=T.Text,Center=false,Outline=false,Visible=true,ZIndex=7})
             if Input.click and hov then it.cb() end
             h=BTN_H+4
 
@@ -678,7 +679,8 @@ function GalaxLib:CreateWindow(opts)
             local bp=Vector2.new(wx,wy); local bs=Vector2.new(iW,BTN_H); local hov=over(bp,bs)
             poolAdd(pool,wid.."_btn", "Square",{Position=bp,Size=bs,Filled=true, Color=hov and T.RedDark or T.Surface1,Visible=true,ZIndex=6})
             poolAdd(pool,wid.."_btnb","Square",{Position=bp,Size=bs,Filled=false,Color=hov and T.Red or T.Border0,Thickness=1,Visible=true,ZIndex=7})
-            poolAdd(pool,wid.."_btnt","Text",{Position=Vector2.new(wx+iW/2,wy+math.floor((BTN_H-13)/2)),Text=it.label,Size=13,Font=FONT,Color=T.Red,Center=true,Outline=false,Visible=true,ZIndex=7})
+            local _bw=textW(it.label,13)
+            poolAdd(pool,wid.."_btnt","Text",{Position=Vector2.new(wx+iW/2-_bw/2,wy+5),Text=it.label,Size=13,Font=FONT,Color=T.Red,Center=false,Outline=false,Visible=true,ZIndex=7})
             if Input.click and hov then self:Notify("Script killed.",self.Title,2);self._running=false end
             h=BTN_H+4
         end
@@ -751,7 +753,8 @@ function GalaxLib:CreateWindow(opts)
             local tpos=pos+Vector2.new(tabX,tabY); local tsz=Vector2.new(tw,tabH)
             local open=(self._openTab==tab)
             poolAdd(pool,"tabbg"..i, "Square",{Position=tpos,Size=tsz,Filled=true,Color=open and T.Surface1 or T.Surface0,Visible=true,ZIndex=3})
-            poolAdd(pool,"tabtx"..i, "Text",{Position=Vector2.new(tpos.X+tw/2,tpos.Y+math.floor((tabH-13)/2)),Text=tab._name,Size=13,Font=F,Color=open and T.Text or T.SubText,Center=true,Outline=false,Visible=true,ZIndex=4})
+            local _tw=textW(tab._name,13)
+            poolAdd(pool,"tabtx"..i, "Text",{Position=Vector2.new(tpos.X+tw/2-_tw/2,tpos.Y+6),Text=tab._name,Size=13,Font=F,Color=open and T.Text or T.SubText,Center=false,Outline=false,Visible=true,ZIndex=4})
             if open then poolAdd(pool,"tabul"..i,"Square",{Position=tpos+Vector2.new(0,tabH-2),Size=Vector2.new(tw,2),Filled=true,Color=T.Accent,Visible=true,ZIndex=4})
             else poolHide(pool,"tabul"..i) end
             if Input.click and over(tpos,tsz) then
