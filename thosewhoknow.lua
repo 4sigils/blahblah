@@ -124,6 +124,15 @@ local function poolDestroy(p) for _,o in pairs(p.d) do pcall(function() o:Remove
 local _scrollDelta=0
 local Input={_prev={},click=false,held=false,scroll=0}
 pcall(function()
+    local UIS = game:GetService("UserInputService")
+    UIS.InputChanged:Connect(function(inp)
+        if inp.UserInputType == Enum.UserInputType.MouseWheel then
+            _scrollDelta = _scrollDelta + (inp.Position.Z > 0 and -1 or 1)
+        end
+    end)
+end)
+-- Fallback: also try Mouse events in case UIS isn't available
+pcall(function()
     local m=game:GetService("Players").LocalPlayer:GetMouse()
     m.WheelForward:Connect(function()  _scrollDelta=_scrollDelta-1 end)
     m.WheelBackward:Connect(function() _scrollDelta=_scrollDelta+1 end)
