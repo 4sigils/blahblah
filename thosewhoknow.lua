@@ -907,8 +907,8 @@ function GalaxLib:CreateWindow(opts)
     end
 
     -- ── Main loop ─────────────────────────────────────────────────────────
+    WIN:_buildSettings()  -- run synchronously so AddSection is available immediately
     task.spawn(function()
-        WIN:_buildSettings()
         while WIN._running do
             task.wait()
             if not isrbxactive() then continue end
