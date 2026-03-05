@@ -465,12 +465,10 @@ function GalaxLib:CreateWindow(opts)
             end
         end
 
-        -- Mouse wheel scrolls the dropdown list via dedicated accumulator
-        local ds = it._ddScrollPending or 0
-        if ds ~= 0 and over(listPos, Vector2.new(iW, listH)) then
-            it.scroll = clamp(it.scroll + ds, 0, math.max(0, total - it.maxVisible))
+        -- Mouse wheel scrolls the dropdown list
+        if Input.scroll ~= 0 and over(listPos, Vector2.new(iW, listH)) then
+            it.scroll = clamp(it.scroll + Input.scroll, 0, math.max(0, total - it.maxVisible))
         end
-        it._ddScrollPending = 0
 
         -- Options
         for vi = 1, visN do
@@ -932,20 +930,25 @@ function GalaxLib:CreateWindow(opts)
             end
         end
 
-        -- Route scroll wheel: if hovering open dropdown list, send to dropdown; else send to window
+        -- Suppress window scroll when a dropdown is open and mouse is over it
         local ddConsumedScroll = false
-        if self._openDropData ~= nil and Input.scroll ~= 0 then
+        if self._openDropData ~= nil then
             local it = self._openDropData
-            local ddP = it._overlayAnchor
+            local ddP = it._overlayAnchor  -- may be nil on very first frame; safe to skip
             if ddP and it._overlayWidth then
-                local listH = math.min(it.maxVisible, #it.options) * 20 + 4 + 28
-                local listP = ddP + Vector2.new(0, 26)
-                if over(listP, Vector2.new(it._overlayWidth, listH)) then
-                    it._ddScrollPending = (it._ddScrollPending or 0) + Input.scroll
+                local winBottom2 = self._pos.Y + self.Size.Y
+                local listH2 = math.min(it.maxVisible, #it.options) * 20 + 4 + 28
+                local listP2 = ddP + Vector2.new(0, 26)
+                if listP2.Y + listH2 > winBottom2 - 4 then
+                    listP2 = ddP - Vector2.new(0, listH2 + 2)
+                end
+                if over(listP2, Vector2.new(it._overlayWidth, listH2)) then
                     ddConsumedScroll = true
                 end
             end
         end
+        -- Always suppress window scroll when a dropdown is open (simpler & safer)
+        if self._openDropData ~= nil then ddConsumedScroll = true end
         if not ddConsumedScroll and over(pos+Vector2.new(padX,contTop), Vector2.new(contW,contH)) and Input.scroll~=0 then
             self._scrollVel = self._scrollVel + Input.scroll * 18
         end
