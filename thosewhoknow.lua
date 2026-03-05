@@ -1,11 +1,11 @@
 --[[
     GalaxLib v2 — Remastered (Patched)
-    
-    FIXES:
-      • Dropdowns render as floating overlay — no longer push content down
-      • Dropdown lists are properly scrollable (mouse wheel + scrollbar)
-      • Widgets are clipped to the window content area (no overflow)
-      • Main content area remains scrollable with momentum
+
+    CHANGES:
+      • Removed setrobloxinput — Roblox input is never blocked
+      • Dropdowns scroll via mouse wheel (wheel consumed so window doesn't also scroll)
+      • Sections collapse independently per column — no row-pairing height lock
+        (each column scrolls independently too)
 ]]
 
 GalaxLib = {}
@@ -121,6 +121,16 @@ local function poolGet(p,id)  return p.d[id] end
 local function poolDestroy(p) for _,o in pairs(p.d) do pcall(function() o:Remove() end) end; p.d={}; p.seen={} end
 
 -- ── Input ────────────────────────────────────────────────────────────────────
+local _mouse1 = false
+pcall(function()
+    local UIS = game:GetService("UserInputService")
+    UIS.InputBegan:Connect(function(inp)
+        if inp.UserInputType == Enum.UserInputType.MouseButton1 then _mouse1 = true end
+    end)
+    UIS.InputEnded:Connect(function(inp)
+        if inp.UserInputType == Enum.UserInputType.MouseButton1 then _mouse1 = false end
+    end)
+end)
 local _scrollDelta=0
 local Input={_prev={},click=false,held=false,scroll=0}
 pcall(function()
@@ -131,22 +141,35 @@ pcall(function()
         end
     end)
 end)
--- Fallback: also try Mouse events in case UIS isn't available
 pcall(function()
     local m=game:GetService("Players").LocalPlayer:GetMouse()
     m.WheelForward:Connect(function()  _scrollDelta=_scrollDelta-1 end)
     m.WheelBackward:Connect(function() _scrollDelta=_scrollDelta+1 end)
 end)
 function Input:update()
-    local m1=ismouse1pressed and ismouse1pressed() or false
+    local m1 = _mouse1
     self.click=m1 and not(self._prev.m1 or false); self.held=m1
     self._prev.m1=m1; self.scroll=_scrollDelta; _scrollDelta=0
 end
+local _keysHeld = {}
+pcall(function()
+    local UIS = game:GetService("UserInputService")
+    UIS.InputBegan:Connect(function(inp)
+        if inp.UserInputType == Enum.UserInputType.Keyboard then
+            _keysHeld[inp.KeyCode.Value] = true
+        end
+    end)
+    UIS.InputEnded:Connect(function(inp)
+        if inp.UserInputType == Enum.UserInputType.Keyboard then
+            _keysHeld[inp.KeyCode.Value] = false
+        end
+    end)
+end)
 function Input:keyClick(kc)
-    local c=iskeypressed and iskeypressed(kc) or false; local p=self._prev[kc] or false
+    local c = _keysHeld[kc] or false; local p=self._prev[kc] or false
     self._prev[kc]=c; return c and not p
 end
-function Input:keyHeld(kc) return iskeypressed and iskeypressed(kc) or false end
+function Input:keyHeld(kc) return _keysHeld[kc] or false end
 function Input:shift() return self:keyHeld(0x10) or self:keyHeld(0xA0) or self:keyHeld(0xA1) end
 
 -- ── Notification queue ───────────────────────────────────────────────────────
@@ -202,24 +225,22 @@ function GalaxLib:CreateWindow(opts)
         _pos=Vector2.new(opts.X or 120,opts.Y or 80),
         _open=true, _running=true,
         _pool=poolNew(),
-        -- FIX: separate overlay pool for dropdowns (renders on top, no layout impact)
         _overlayPool=poolNew(),
         _tabs={}, _openTab=nil,
         _drag=nil, _resize=nil, _resizeBase=nil,
         _sliderDrag=nil, _keybindTarget=nil, _textboxTarget=nil,
-        _openDropId=nil, _openDropData=nil,  -- store dropdown screen position for overlay
+        _openDropId=nil, _openDropData=nil,
         _cpTarget=nil, _settingsListen=false,
         _snakeLines={}, _snakeCount=18,
-        _scrollY=0, _scrollVel=0,
+        -- Independent scroll per column: [1]=left, [2]=right
+        _scrollY={0,0}, _scrollVel={0,0},
         _minSz=Vector2.new(580,480),
-        -- FIX: track content area bounds for widget clipping
         _contClip={top=0,bottom=9999,left=0,right=9999},
     }
     for i=1,WIN._snakeCount do
         WIN._snakeLines[i]=newDraw("Line",{Thickness=1.5,Color=T.Accent,Visible=false,ZIndex=50})
     end
 
-    -- ── Notify ───────────────────────────────────────────────────────────────
     function WIN:Notify(msg,title,dur) pushNotif(msg,title or self.Title,dur) end
     function WIN:Unload() self._running=false end
 
@@ -362,11 +383,9 @@ function GalaxLib:CreateWindow(opts)
         table.insert(self._tabs,ST)
     end
 
-    -- ────────────────────────────────────────────────────────────────────────
-    -- FIX 1 & 2: Dropdown overlay renderer
-    -- Renders the open dropdown list into the OVERLAY pool at fixed screen coords.
-    -- Does NOT affect layout height of the section it belongs to.
-    -- ────────────────────────────────────────────────────────────────────────
+    -- ── Dropdown overlay renderer ─────────────────────────────────────────────
+    -- Renders the open dropdown as a floating overlay.
+    -- Mouse wheel over the list scrolls the list and is consumed (window won't scroll).
     function WIN:_renderDropdownOverlay(F)
         poolBegin(self._overlayPool)
 
@@ -376,21 +395,21 @@ function GalaxLib:CreateWindow(opts)
             return
         end
 
-        local ddPos = it._overlayAnchor   -- set when the dropdown header is drawn
+        local ddPos = it._overlayAnchor
         local iW    = it._overlayWidth
         if not ddPos or not iW then
             poolFlush(self._overlayPool)
             return
         end
 
-        local pool = self._overlayPool
-        local wid  = "__ovdd"
+        local pool  = self._overlayPool
+        local wid   = "__ovdd"
         local multi = (it.type == "multidropdown")
 
         local optH   = 20
         local SBW    = 6
         local SBP    = 3
-        local sbH_px = 28  -- search box height
+        local sbH_px = 28
 
         -- Build filtered list
         local filt = {}
@@ -408,25 +427,23 @@ function GalaxLib:CreateWindow(opts)
         local optW   = hasSB and (iW - SBW - SBP * 2) or iW
         local listH  = math.min(maxV, total) * optH + 4 + sbH_px
 
-        -- FIX: clamp list so it never goes below the window bottom
         local winBottom = self._pos.Y + self.Size.Y
-        local listPos   = ddPos + Vector2.new(0, 24 + 2)  -- 24 = dropdown header height
-        -- If list would go below window, flip it upward
+        local listPos   = ddPos + Vector2.new(0, 24 + 2)
         if listPos.Y + listH > winBottom - 4 then
             listPos = ddPos - Vector2.new(0, listH + 2)
         end
 
-        -- Background + border (ZIndex 90+ so it's above all section content)
-        poolAdd(pool, wid.."_bg",  "Square", {Position=listPos, Size=Vector2.new(iW,listH),   Filled=true,  Color=T.Surface0, Visible=true, ZIndex=90})
-        poolAdd(pool, wid.."_bd",  "Square", {Position=listPos, Size=Vector2.new(iW,listH),   Filled=false, Color=T.Accent,   Thickness=1,  Visible=true, ZIndex=91})
+        -- Background + border
+        poolAdd(pool, wid.."_bg", "Square", {Position=listPos, Size=Vector2.new(iW,listH),   Filled=true,  Color=T.Surface0, Visible=true, ZIndex=90})
+        poolAdd(pool, wid.."_bd", "Square", {Position=listPos, Size=Vector2.new(iW,listH),   Filled=false, Color=T.Accent,   Thickness=1,  Visible=true, ZIndex=91})
 
         -- Search box
         local sbPos = listPos + Vector2.new(4, 4)
         local sbSz  = Vector2.new(iW - 8, 19)
         if Input.click and over(sbPos, sbSz) then it._sfocus = true
         elseif Input.click and not over(sbPos, sbSz) then it._sfocus = false end
-        poolAdd(pool, wid.."_dsb",  "Square", {Position=sbPos, Size=sbSz, Filled=true,  Color=T.Surface1,                          Visible=true, ZIndex=92})
-        poolAdd(pool, wid.."_dsbb", "Square", {Position=sbPos, Size=sbSz, Filled=false, Color=it._sfocus and T.Accent or T.Border1, Thickness=1,  Visible=true, ZIndex=93})
+        poolAdd(pool, wid.."_dsb",  "Square", {Position=sbPos, Size=sbSz, Filled=true,  Color=T.Surface1, Visible=true, ZIndex=92})
+        poolAdd(pool, wid.."_dsbb", "Square", {Position=sbPos, Size=sbSz, Filled=false, Color=it._sfocus and T.Accent or T.Border1, Thickness=1, Visible=true, ZIndex=93})
         local cur  = (it._sfocus and math.floor(tick()*2)%2==0) and "|" or ""
         local sdsp = it._search ~= "" and (it._search..cur) or (it._sfocus and cur or "🔍 search...")
         poolAdd(pool, wid.."_dsbt", "Text", {Position=sbPos+Vector2.new(5,2), Text=sdsp, Size=12, Font=F,
@@ -450,10 +467,9 @@ function GalaxLib:CreateWindow(opts)
                     end
                 end
             end
-            -- don't reset scroll when typing in search
         end
 
-        -- FIX 2: Scrollbar
+        -- Scrollbar
         local visN = math.min(it.maxVisible, total)
         if hasSB then
             local barH   = math.max(14, (listH - sbH_px) * (it.maxVisible / total))
@@ -474,9 +490,10 @@ function GalaxLib:CreateWindow(opts)
             end
         end
 
-        -- Mouse wheel scrolls the dropdown list
-        if Input.scroll ~= 0 and over(listPos, Vector2.new(iW, listH)) then
+        -- Mouse wheel: scroll dropdown list; consume so window doesn't also scroll
+        if over(listPos, Vector2.new(iW, listH)) and Input.scroll ~= 0 then
             it.scroll = clamp(it.scroll + Input.scroll, 0, math.max(0, total - it.maxVisible))
+            Input.scroll = 0
         end
 
         -- Options
@@ -492,9 +509,7 @@ function GalaxLib:CreateWindow(opts)
                 local sel = it.selected[opt] == true
                 if opHov then
                     poolAdd(pool, wid.."_ohi"..vi, "Square", {Position=opPos, Size=opSz, Filled=true, Color=T.Surface1, Visible=true, ZIndex=91})
-                else
-                    poolHide(pool, wid.."_ohi"..vi)
-                end
+                else poolHide(pool, wid.."_ohi"..vi) end
                 local cp = opPos + Vector2.new(6,5)
                 local cs = Vector2.new(10,10)
                 poolAdd(pool, wid.."_mcb"..vi,  "Square", {Position=cp, Size=cs, Filled=true,  Color=sel and T.Accent or T.Surface0, Visible=true, ZIndex=92})
@@ -510,9 +525,7 @@ function GalaxLib:CreateWindow(opts)
                 local sel = (opt == it.value)
                 if opHov or sel then
                     poolAdd(pool, wid.."_ohi"..vi, "Square", {Position=opPos, Size=opSz, Filled=true, Color=sel and T.AccentDark or T.Surface1, Visible=true, ZIndex=91})
-                else
-                    poolHide(pool, wid.."_ohi"..vi)
-                end
+                else poolHide(pool, wid.."_ohi"..vi) end
                 poolAdd(pool, wid.."_ot"..vi, "Text", {Position=opPos+Vector2.new(8,3), Text=opt, Size=13, Font=F, Color=sel and T.Accent or T.Text, Outline=false, Visible=true, ZIndex=92})
                 if Input.click and opHov then
                     it.value = opt; it.cb(opt)
@@ -522,7 +535,6 @@ function GalaxLib:CreateWindow(opts)
             end
         end
 
-        -- Hide excess option slots
         for vi = visN+1, it.maxVisible+4 do
             poolHide(pool, wid.."_ohi"..vi); poolHide(pool, wid.."_ot"..vi)
             poolHide(pool, wid.."_mcb"..vi); poolHide(pool, wid.."_mcbb"..vi); poolHide(pool, wid.."_mot"..vi)
@@ -532,11 +544,8 @@ function GalaxLib:CreateWindow(opts)
     end
 
     -- ── Widget renderer ──────────────────────────────────────────────────────
-    -- FIX 3: All widgets check clip bounds before rendering; returns height consumed.
     function WIN:_widget(it, pool, wid, wx, wy, iW, F)
         local clip = self._contClip
-        -- If widget top is below content area or widget is scrolled above, skip drawing
-        -- (still return height so layout is correct)
         local visible = (wy >= clip.top - 4) and (wy <= clip.bottom + 4)
         local h = 0
 
@@ -619,7 +628,6 @@ function GalaxLib:CreateWindow(opts)
             h = 34
 
         elseif it.type == "dropdown" or it.type == "multidropdown" then
-            -- FIX 1: Dropdown no longer pushes layout. It registers anchor position for overlay.
             local multi = (it.type == "multidropdown")
             if not it._sid then it._sid = {}; it._wasM1 = false end
             local m1 = Input.held; it._clicked = m1 and not it._wasM1
@@ -636,7 +644,7 @@ function GalaxLib:CreateWindow(opts)
 
             if visible then
                 poolAdd(pool, wid.."_ddlbl", "Text",     {Position=Vector2.new(wx,wy), Text=it.label, Size=12, Font=F, Color=T.SubText, Outline=false, Visible=true, ZIndex=6})
-                poolAdd(pool, wid.."_ddbg",  "Square",   {Position=ddP, Size=ddS, Filled=true,  Color=T.Surface1,                    Visible=true, ZIndex=6})
+                poolAdd(pool, wid.."_ddbg",  "Square",   {Position=ddP, Size=ddS, Filled=true,  Color=T.Surface1, Visible=true, ZIndex=6})
                 poolAdd(pool, wid.."_ddb",   "Square",   {Position=ddP, Size=ddS, Filled=false, Color=isOpen and T.Accent or T.Border0, Thickness=1, Visible=true, ZIndex=7})
                 poolAdd(pool, wid.."_ddv",   "Text",     {Position=ddP+Vector2.new(6,4), Text=disp, Size=13, Font=F, Color=T.Text, Outline=false, Visible=true, ZIndex=7})
                 local ax,ay = ddP.X+ddS.X-14, ddP.Y+11
@@ -652,23 +660,18 @@ function GalaxLib:CreateWindow(opts)
                     else
                         self._openDropId   = it._sid
                         self._openDropData = it
-                        -- Store screen anchor so overlay knows where to draw
                         it._overlayAnchor  = ddP
                         it._overlayWidth   = iW
                     end
-                elseif isOpen then
-                    -- click outside: close (handled in overlay render)
                 end
             end
 
-            -- Keep anchor updated every frame (dropdown header moves when window moves)
             if isOpen and visible then
                 it._overlayAnchor = ddP
                 it._overlayWidth  = iW
             end
 
             it._wasM1 = m1
-            -- FIX 1: height is FIXED — no extra space for the open list
             h = 42
 
         elseif it.type == "colorpicker" then
@@ -757,7 +760,7 @@ function GalaxLib:CreateWindow(opts)
             if disp == "" then disp = foc and cur or it.placeholder end
             if visible then
                 poolAdd(pool, wid.."_lbl",  "Text",   {Position=Vector2.new(wx,wy), Text=it.label, Size=12, Font=F, Color=T.SubText, Outline=false, Visible=true, ZIndex=6})
-                poolAdd(pool, wid.."_tbbg", "Square", {Position=tP, Size=tS, Filled=true,  Color=T.Surface1,                       Visible=true, ZIndex=6})
+                poolAdd(pool, wid.."_tbbg", "Square", {Position=tP, Size=tS, Filled=true,  Color=T.Surface1, Visible=true, ZIndex=6})
                 poolAdd(pool, wid.."_tbb",  "Square", {Position=tP, Size=tS, Filled=false, Color=foc and T.Accent or T.Border0, Thickness=1, Visible=true, ZIndex=7})
                 poolAdd(pool, wid.."_tbx",  "Text",   {Position=tP+Vector2.new(6,4), Text=disp, Size=13, Font=F, Color=(it.value~="" or foc) and T.Text or T.SubText, Outline=false, Visible=true, ZIndex=7})
             else
@@ -901,13 +904,13 @@ function GalaxLib:CreateWindow(opts)
             if Input.click and over(tpos,tsz) then
                 self._openTab=tab; self._openDropId=nil; self._openDropData=nil
                 self._textboxTarget=nil; self._cpTarget=nil
-                self._scrollY=0; self._scrollVel=0
+                self._scrollY={0,0}; self._scrollVel={0,0}
             end
             tabX = tabX+tw+5
         end
         if not self._openTab then poolFlush(pool); renderNotifs(); return end
 
-        -- Content area
+        -- Content area dimensions
         local contTop = TH + tabH + 10
         local padX    = 10
         local gap     = 8
@@ -916,7 +919,6 @@ function GalaxLib:CreateWindow(opts)
         local iW      = colW - 14
         local contH   = sz.Y - contTop - 8
 
-        -- FIX 3: Update clip region so widgets know what's visible
         self._contClip = {
             top    = pos.Y + contTop,
             bottom = pos.Y + contTop + contH,
@@ -924,7 +926,7 @@ function GalaxLib:CreateWindow(opts)
             right  = pos.X + padX + contW,
         }
 
-        -- FIX: Close dropdown if click happened outside both header and overlay list
+        -- Close dropdown on outside click
         if Input.click and self._openDropId ~= nil and self._openDropData ~= nil then
             local it = self._openDropData
             local ddP = it._overlayAnchor
@@ -939,32 +941,16 @@ function GalaxLib:CreateWindow(opts)
             end
         end
 
-        -- Suppress window scroll when a dropdown is open and mouse is over it
-        local ddConsumedScroll = false
-        if self._openDropData ~= nil then
-            local it = self._openDropData
-            local ddP = it._overlayAnchor  -- may be nil on very first frame; safe to skip
-            if ddP and it._overlayWidth then
-                local winBottom2 = self._pos.Y + self.Size.Y
-                local listH2 = math.min(it.maxVisible, #it.options) * 20 + 4 + 28
-                local listP2 = ddP + Vector2.new(0, 26)
-                if listP2.Y + listH2 > winBottom2 - 4 then
-                    listP2 = ddP - Vector2.new(0, listH2 + 2)
-                end
-                if over(listP2, Vector2.new(it._overlayWidth, listH2)) then
-                    ddConsumedScroll = true
-                end
-            end
+        -- Split sections into left and right columns (odd=left, even=right)
+        local secs      = self._openTab._sections
+        local leftSecs  = {}
+        local rightSecs = {}
+        for si, sec in ipairs(secs) do
+            if si % 2 == 1 then table.insert(leftSecs,  sec)
+            else                 table.insert(rightSecs, sec) end
         end
-        -- Always suppress window scroll when a dropdown is open (simpler & safer)
-        if self._openDropData ~= nil then ddConsumedScroll = true end
-        if not ddConsumedScroll and over(pos+Vector2.new(padX,contTop), Vector2.new(contW,contH)) and Input.scroll~=0 then
-            self._scrollVel = self._scrollVel + Input.scroll * 18
-        end
-        self._scrollVel = self._scrollVel * 0.78
-        self._scrollY   = math.max(0, self._scrollY + self._scrollVel)
 
-        -- Estimate section height
+        -- Estimate single section height
         local function estSecH(sec)
             local sh = 22
             if not sec._collapsed then
@@ -974,7 +960,7 @@ function GalaxLib:CreateWindow(opts)
                     elseif it.type=="toggle"                               then sh=sh+28
                     elseif it.type=="button"                               then sh=sh+28
                     elseif it.type=="slider"                               then sh=sh+40
-                    elseif it.type=="dropdown" or it.type=="multidropdown" then sh=sh+48  -- fixed, no expansion
+                    elseif it.type=="dropdown" or it.type=="multidropdown" then sh=sh+48
                     elseif it.type=="colorpicker"                          then sh=sh+(it._open and 160 or 30)
                     elseif it.type=="keybind"                              then sh=sh+30
                     elseif it.type=="textbox"                              then sh=sh+50
@@ -986,74 +972,95 @@ function GalaxLib:CreateWindow(opts)
             return sh + 10
         end
 
-        -- Pair sections into 2-column rows
-        local secs = self._openTab._sections
-        local rows  = {}
-        local si = 1
-        while si <= #secs do
-            table.insert(rows, {secs[si], secs[si+1]})
-            si = si + 2
+        local function colTotalH(secList)
+            local h = 0
+            for _, sec in ipairs(secList) do h = h + estSecH(sec) + gap end
+            return h
         end
 
-        -- Measure total scrollable height
-        local totalH = 0
-        for _,row in ipairs(rows) do
-            local h1 = estSecH(row[1])
-            local h2 = row[2] and estSecH(row[2]) or 0
-            totalH = totalH + math.max(h1, h2) + gap
-        end
-        self._scrollY = math.min(self._scrollY, math.max(0, totalH - contH))
+        local totalHL = colTotalH(leftSecs)
+        local totalHR = colTotalH(rightSecs)
 
-        -- Scrollbar
-        if totalH > contH then
-            local SBW = 4
-            local sbX = pos.X + sz.X - SBW - 2
-            local sbH = math.max(20, contH * (contH / totalH))
-            local sbY = contTop + (self._scrollY / math.max(1, totalH - contH)) * (contH - sbH)
-            poolAdd(pool,"sc_trk","Square",{Position=Vector2.new(sbX,pos.Y+contTop),Size=Vector2.new(SBW,contH),Filled=true, Color=T.Surface1,Visible=true,ZIndex=5})
-            poolAdd(pool,"sc_bar","Square",{Position=Vector2.new(sbX,pos.Y+sbY),    Size=Vector2.new(SBW,sbH), Filled=true, Color=T.Accent, Visible=true,ZIndex=6})
-        end
-
-        -- Draw a section
-        local function drawSec(sec, sid, absX, relY)
-            local absY = pos.Y + relY
-
-            local hdrP = Vector2.new(absX+4, absY+4)
-            poolAdd(pool, sid.."_hdr", "Text", {
-                Position=hdrP, Text=sec._name,
-                Size=11, Font=F, Color=T.SubText, Outline=false, Visible=true, ZIndex=6
-            })
-            if Input.click and over(hdrP-Vector2.new(0,2), Vector2.new(colW,14)) then
-                sec._collapsed = not sec._collapsed
-            end
-
-            local wY = relY + 20
-            if not sec._collapsed then
-                for wi,it in ipairs(sec._widgets) do
-                    local consumed = self:_widget(it, pool, sid.."w"..wi, absX+7, pos.Y+wY, iW, F)
-                    wY = wY + consumed + 6
+        -- Per-column scroll; only scroll if mouse is over that column
+        -- Dropdown overlay consumes the scroll first (handled in _renderDropdownOverlay)
+        if self._openDropData == nil and Input.scroll ~= 0 then
+            local mp  = mpos()
+            local xL  = pos.X + padX
+            local xR  = pos.X + padX + colW + gap
+            local yT  = pos.Y + contTop
+            local yB  = pos.Y + contTop + contH
+            if mp.Y >= yT and mp.Y <= yB then
+                if mp.X >= xL and mp.X < xL + colW then
+                    self._scrollVel[1] = self._scrollVel[1] + Input.scroll * 18
+                elseif mp.X >= xR and mp.X < xR + colW then
+                    self._scrollVel[2] = self._scrollVel[2] + Input.scroll * 18
                 end
             end
-
-            local secH = wY - relY + 8
-            poolAdd(pool, sid.."_bg",  "Square", {Position=Vector2.new(absX,absY), Size=Vector2.new(colW,secH), Filled=true,  Color=T.Surface0, Visible=true, ZIndex=4})
-            poolAdd(pool, sid.."_bgb", "Square", {Position=Vector2.new(absX,absY), Size=Vector2.new(colW,secH), Filled=false, Color=T.Border0,  Thickness=1,  Visible=true, ZIndex=5})
-            local hdrObj = poolGet(pool, sid.."_hdr"); if hdrObj then hdrObj.ZIndex=6 end
-            return secH
         end
 
-        local rowY = contTop - self._scrollY
-        for ri,row in ipairs(rows) do
-            local xL = pos.X + padX
-            local xR = pos.X + padX + colW + gap
-            local h1 = drawSec(row[1], "r"..ri.."a", xL, rowY)
-            local h2 = row[2] and drawSec(row[2], "r"..ri.."b", xR, rowY) or 0
-            rowY = rowY + math.max(h1, h2) + gap
+        self._scrollVel[1] = self._scrollVel[1] * 0.78
+        self._scrollVel[2] = self._scrollVel[2] * 0.78
+        self._scrollY[1]   = math.max(0, math.min(self._scrollY[1] + self._scrollVel[1], math.max(0, totalHL - contH)))
+        self._scrollY[2]   = math.max(0, math.min(self._scrollY[2] + self._scrollVel[2], math.max(0, totalHR - contH)))
+
+        -- Per-column scrollbars
+        local SBW = 4
+        local xL  = pos.X + padX
+        local xR  = pos.X + padX + colW + gap
+        if totalHL > contH then
+            local sbH = math.max(20, contH * (contH / totalHL))
+            local sbY = contTop + (self._scrollY[1] / math.max(1, totalHL - contH)) * (contH - sbH)
+            local sbX = xL + colW - SBW - 1
+            poolAdd(pool,"sc_trkL","Square",{Position=Vector2.new(sbX,pos.Y+contTop),Size=Vector2.new(SBW,contH),Filled=true, Color=T.Surface1,Visible=true,ZIndex=5})
+            poolAdd(pool,"sc_barL","Square",{Position=Vector2.new(sbX,pos.Y+sbY),    Size=Vector2.new(SBW,sbH), Filled=true, Color=T.Accent, Visible=true,ZIndex=6})
+        else poolHide(pool,"sc_trkL"); poolHide(pool,"sc_barL") end
+        if totalHR > contH then
+            local sbH = math.max(20, contH * (contH / totalHR))
+            local sbY = contTop + (self._scrollY[2] / math.max(1, totalHR - contH)) * (contH - sbH)
+            local sbX = xR + colW - SBW - 1
+            poolAdd(pool,"sc_trkR","Square",{Position=Vector2.new(sbX,pos.Y+contTop),Size=Vector2.new(SBW,contH),Filled=true, Color=T.Surface1,Visible=true,ZIndex=5})
+            poolAdd(pool,"sc_barR","Square",{Position=Vector2.new(sbX,pos.Y+sbY),    Size=Vector2.new(SBW,sbH), Filled=true, Color=T.Accent, Visible=true,ZIndex=6})
+        else poolHide(pool,"sc_trkR"); poolHide(pool,"sc_barR") end
+
+        -- Draw a full column of sections independently
+        local function drawColumn(secList, colX, scrollY, colIdx)
+            local rowY = contTop - scrollY
+            for si, sec in ipairs(secList) do
+                local absY = pos.Y + rowY
+                local sid  = "c"..colIdx.."s"..si
+
+                local hdrP = Vector2.new(colX+4, absY+4)
+                poolAdd(pool, sid.."_hdr", "Text", {
+                    Position=hdrP, Text=sec._name,
+                    Size=11, Font=F, Color=T.SubText, Outline=false, Visible=true, ZIndex=6
+                })
+                if Input.click and over(hdrP-Vector2.new(0,2), Vector2.new(colW,14)) then
+                    sec._collapsed = not sec._collapsed
+                end
+
+                local wY = rowY + 20
+                if not sec._collapsed then
+                    for wi, it in ipairs(sec._widgets) do
+                        local consumed = self:_widget(it, pool, sid.."w"..wi, colX+7, pos.Y+wY, iW, F)
+                        wY = wY + consumed + 6
+                    end
+                end
+
+                local secH = wY - rowY + 8
+                poolAdd(pool, sid.."_bg",  "Square", {Position=Vector2.new(colX,absY), Size=Vector2.new(colW,secH), Filled=true,  Color=T.Surface0, Visible=true, ZIndex=4})
+                poolAdd(pool, sid.."_bgb", "Square", {Position=Vector2.new(colX,absY), Size=Vector2.new(colW,secH), Filled=false, Color=T.Border0,  Thickness=1,  Visible=true, ZIndex=5})
+                local hdrObj = poolGet(pool, sid.."_hdr"); if hdrObj then hdrObj.ZIndex=6 end
+
+                rowY = rowY + secH + gap
+            end
         end
+
+        drawColumn(leftSecs,  xL, self._scrollY[1], 1)
+        drawColumn(rightSecs, xR, self._scrollY[2], 2)
 
         poolFlush(pool)
 
-        -- FIX 1: Render dropdown overlay last (on top of everything)
+        -- Dropdown overlay renders last (on top of everything)
         self:_renderDropdownOverlay(F)
 
         renderNotifs()
@@ -1061,8 +1068,9 @@ function GalaxLib:CreateWindow(opts)
 
     -- ── Main loop ─────────────────────────────────────────────────────────
     WIN:_buildSettings()
-    -- Block Roblox input immediately since UI starts open
-    pcall(function() setrobloxinput(false) end)
+
+    -- NOTE: setrobloxinput removed — Roblox input is never blocked by this UI
+
     task.spawn(function()
         while WIN._running do
             task.wait()
@@ -1076,11 +1084,8 @@ function GalaxLib:CreateWindow(opts)
                     WIN._settingsListen=false; WIN._cpTarget=nil
                 end
             end
-            -- Always enforce input block state every frame
-            pcall(function() setrobloxinput(not WIN._open) end)
             WIN:_render()
         end
-        setrobloxinput(true)
         poolDestroy(WIN._pool)
         poolDestroy(WIN._overlayPool)
         poolDestroy(_notifPool)
