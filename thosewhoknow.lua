@@ -1,43 +1,11 @@
 --[[
-    GalaxLib v2 — Remastered
-    100% API-compatible with GalaxLib v1 + new features
-
-    NEW IN v2:
-      • Full-width single-column sections (no more forced 2-column clipping)
-      • Scrollable content with smooth momentum + draggable scrollbar
-      • Built-in notify() — no external dependency needed
-      • Animated toggle (sliding knob, lerped color)
-      • Dropdown search filter (type to filter options)
-      • Collapsible sections (click header to collapse)
-      • Resize handle (drag bottom-right corner)
-      • AddSeparator()  — horizontal rule
-      • AddButton(label, cb, color)  — optional color tint
-      • AddTextbox: placeholder text, underscore & special char support
-      • Mouse wheel scrolls dropdown lists
-      • Notification queue with fade + progress bar (no external notify needed)
-      • Window min-size enforcement (420×320)
-
-    USAGE (identical to v1):
-      local Win = GalaxLib:CreateWindow({ Title="Hub", Size=Vector2.new(560,480), MenuKey=0x70 })
-      local Tab = Win:AddTab("Combat")
-      local Sec = Tab:AddSection("Aimbot")
-
-      Sec:AddToggle("Enable", false, function(v) end)
-      Sec:AddSlider("FOV", {Min=1, Max=360, Default=90, Suffix="°"}, function(v) end)
-      Sec:AddDropdown("Mode", {"A","B","C"}, "A", {MaxVisible=5}, function(v) end)
-      Sec:AddMultiDropdown("Flags", {"A","B","C"}, {}, {}, function(tbl) end)
-      Sec:AddColorPicker("Color", Color3.fromRGB(255,0,0), function(c) end)
-      Sec:AddKeybind("Key", 0x46, function() end)
-      Sec:AddTextbox("Name", "default", function(v) end, "Enter name...")
-      Sec:AddButton("Fire", function() end)
-      Sec:AddButton("Danger", function() end, Color3.fromRGB(180,40,40))
-      Sec:AddLabel("v2.0")
-      Sec:AddSeparator()
-
-      Win:Notify("Hello!", "Hub", 3)
-      Win:Unload()
-
-      Settings tab auto-added: Toggle Key, Kill Script, Theme picker
+    GalaxLib v2 — Remastered (Patched)
+    
+    FIXES:
+      • Dropdowns render as floating overlay — no longer push content down
+      • Dropdown lists are properly scrollable (mouse wheel + scrollbar)
+      • Widgets are clipped to the window content area (no overflow)
+      • Main content area remains scrollable with momentum
 ]]
 
 GalaxLib = {}
@@ -193,7 +161,6 @@ local function renderNotifs()
         end
     end
     _notifs=alive
-    -- stack bottom-right; approximate screen width
     local scrW, scrH = 1920, 1080
     for i,n in ipairs(_notifs) do
         local nx=scrW-NOTIF_W-10
@@ -202,14 +169,12 @@ local function renderNotifs()
         local bg=lerpC(Color3.new(0,0,0),T.Surface0,a)
         local ac=lerpC(Color3.new(0,0,0),T.Accent,a)
         local tx=lerpC(Color3.new(0,0,0),T.Text,a)
-        local st=lerpC(Color3.new(0,0,0),T.SubText,a)
         local nid="__n"..n.id
         poolAdd(_notifPool,nid.."bg",  "Square",{Position=Vector2.new(nx,ny),Size=Vector2.new(NOTIF_W,NOTIF_H),Filled=true, Color=bg,Visible=true,ZIndex=200})
         poolAdd(_notifPool,nid.."bd",  "Square",{Position=Vector2.new(nx,ny),Size=Vector2.new(NOTIF_W,NOTIF_H),Filled=false,Color=ac,Thickness=1,Visible=true,ZIndex=201})
         poolAdd(_notifPool,nid.."bar", "Square",{Position=Vector2.new(nx,ny),Size=Vector2.new(3,NOTIF_H),Filled=true,Color=ac,Visible=true,ZIndex=202})
         poolAdd(_notifPool,nid.."ttl", "Text",  {Position=Vector2.new(nx+10,ny+7), Text=n.title,Size=11,Font=F,Color=ac,Outline=false,Visible=true,ZIndex=202})
         poolAdd(_notifPool,nid.."msg", "Text",  {Position=Vector2.new(nx+10,ny+21),Text=n.msg,  Size=13,Font=F,Color=tx,Outline=false,Visible=true,ZIndex=202})
-        -- progress bar
         local pct=clamp((n.endAt-now)/n.startDur,0,1)
         poolAdd(_notifPool,nid.."prg","Square",{Position=Vector2.new(nx,ny+NOTIF_H-3),Size=Vector2.new(math.max(0,NOTIF_W*pct),3),Filled=true,Color=ac,Visible=true,ZIndex=202})
     end
@@ -222,17 +187,24 @@ end
 function GalaxLib:CreateWindow(opts)
     opts=opts or {}
     local WIN={
-        Title=opts.Title or "Galax", Size=Vector2.new(math.max(580,opts.Size and opts.Size.X or 580), math.max(480,opts.Size and opts.Size.Y or 480)),
+        Title=opts.Title or "Galax",
+        Size=Vector2.new(math.max(580,opts.Size and opts.Size.X or 580), math.max(480,opts.Size and opts.Size.Y or 480)),
         MenuKey=opts.MenuKey or 0x70,
         _pos=Vector2.new(opts.X or 120,opts.Y or 80),
         _open=true, _running=true,
-        _pool=poolNew(), _tabs={}, _openTab=nil,
+        _pool=poolNew(),
+        -- FIX: separate overlay pool for dropdowns (renders on top, no layout impact)
+        _overlayPool=poolNew(),
+        _tabs={}, _openTab=nil,
         _drag=nil, _resize=nil, _resizeBase=nil,
         _sliderDrag=nil, _keybindTarget=nil, _textboxTarget=nil,
-        _openDropId=nil, _cpTarget=nil, _settingsListen=false,
+        _openDropId=nil, _openDropData=nil,  -- store dropdown screen position for overlay
+        _cpTarget=nil, _settingsListen=false,
         _snakeLines={}, _snakeCount=18,
         _scrollY=0, _scrollVel=0,
         _minSz=Vector2.new(580,480),
+        -- FIX: track content area bounds for widget clipping
+        _contClip={top=0,bottom=9999,left=0,right=9999},
     }
     for i=1,WIN._snakeCount do
         WIN._snakeLines[i]=newDraw("Line",{Thickness=1.5,Color=T.Accent,Visible=false,ZIndex=50})
@@ -337,7 +309,6 @@ function GalaxLib:CreateWindow(opts)
     -- ── Settings tab (auto-built) ─────────────────────────────────────────
     function WIN:_buildSettings()
         local ST={_name="Settings",_sections={},_win=self,_isSettings=true}
-        -- Give Settings tab a real AddSection so external code can inject sections
         local winRef=self
         function ST:AddSection(sname)
             local SEC={_name=sname,_widgets={},_win=winRef,_collapsed=false}
@@ -382,351 +353,479 @@ function GalaxLib:CreateWindow(opts)
         table.insert(self._tabs,ST)
     end
 
-    -- ── Dropdown list helper ─────────────────────────────────────────────
-    function WIN:_ddList(pool,wid,it,ddPos,ddSz,iW,FONT,multi)
-        local optH=20
-        -- Search filter
-        local filt={}
-        local srch=(it._search or ""):lower()
-        for _,o in ipairs(it.options) do
-            if srch=="" or o:lower():find(srch,1,true) then filt[#filt+1]=o end
+    -- ────────────────────────────────────────────────────────────────────────
+    -- FIX 1 & 2: Dropdown overlay renderer
+    -- Renders the open dropdown list into the OVERLAY pool at fixed screen coords.
+    -- Does NOT affect layout height of the section it belongs to.
+    -- ────────────────────────────────────────────────────────────────────────
+    function WIN:_renderDropdownOverlay(F)
+        poolBegin(self._overlayPool)
+
+        local it = self._openDropData
+        if not it or self._openDropId == nil then
+            poolFlush(self._overlayPool)
+            return
         end
-        local total=#filt
-        local maxV=math.min(it.maxVisible,total)
-        it.scroll=clamp(it.scroll,0,math.max(0,total-maxV))
 
-        local SBW=6; local SBP=3
-        local hasSB=(total>it.maxVisible)
-        local optW=hasSB and (iW-SBW-SBP*2) or iW
+        local ddPos = it._overlayAnchor   -- set when the dropdown header is drawn
+        local iW    = it._overlayWidth
+        if not ddPos or not iW then
+            poolFlush(self._overlayPool)
+            return
+        end
 
-        local listPos=ddPos+Vector2.new(0,ddSz.Y+2)
-        local sbH_px=28  -- search box height
-        local listH=math.min(maxV,total)*optH+4+sbH_px
+        local pool = self._overlayPool
+        local wid  = "__ovdd"
+        local multi = (it.type == "multidropdown")
 
-        -- Background + border
-        poolAdd(pool,wid.."_dll", "Square",{Position=listPos,Size=Vector2.new(iW,listH),Filled=true, Color=T.Surface0,Visible=true,ZIndex=20})
-        poolAdd(pool,wid.."_dlb", "Square",{Position=listPos,Size=Vector2.new(iW,listH),Filled=false,Color=T.Accent, Thickness=1,Visible=true,ZIndex=21})
+        local optH   = 20
+        local SBW    = 6
+        local SBP    = 3
+        local sbH_px = 28  -- search box height
+
+        -- Build filtered list
+        local filt = {}
+        local srch = (it._search or ""):lower()
+        for _, o in ipairs(it.options) do
+            if srch == "" or o:lower():find(srch, 1, true) then
+                filt[#filt + 1] = o
+            end
+        end
+        local total  = #filt
+        local maxV   = math.min(it.maxVisible, total)
+        it.scroll    = clamp(it.scroll, 0, math.max(0, total - maxV))
+
+        local hasSB  = (total > it.maxVisible)
+        local optW   = hasSB and (iW - SBW - SBP * 2) or iW
+        local listH  = math.min(maxV, total) * optH + 4 + sbH_px
+
+        -- FIX: clamp list so it never goes below the window bottom
+        local winBottom = self._pos.Y + self.Size.Y
+        local listPos   = ddPos + Vector2.new(0, 24 + 2)  -- 24 = dropdown header height
+        -- If list would go below window, flip it upward
+        if listPos.Y + listH > winBottom - 4 then
+            listPos = ddPos - Vector2.new(0, listH + 2)
+        end
+
+        -- Background + border (ZIndex 90+ so it's above all section content)
+        poolAdd(pool, wid.."_bg",  "Square", {Position=listPos, Size=Vector2.new(iW,listH),   Filled=true,  Color=T.Surface0, Visible=true, ZIndex=90})
+        poolAdd(pool, wid.."_bd",  "Square", {Position=listPos, Size=Vector2.new(iW,listH),   Filled=false, Color=T.Accent,   Thickness=1,  Visible=true, ZIndex=91})
 
         -- Search box
-        local sbPos=listPos+Vector2.new(4,4)
-        local sbSz=Vector2.new(iW-8,19)
-        if Input.click and over(sbPos,sbSz) then it._sfocus=true
-        elseif Input.click and not over(sbPos,sbSz) then it._sfocus=false end
-        poolAdd(pool,wid.."_dsb",  "Square",{Position=sbPos,Size=sbSz,Filled=true, Color=T.Surface1,Visible=true,ZIndex=22})
-        poolAdd(pool,wid.."_dsbb", "Square",{Position=sbPos,Size=sbSz,Filled=false,Color=it._sfocus and T.Accent or T.Border1,Thickness=1,Visible=true,ZIndex=23})
-        local cur=(it._sfocus and math.floor(tick()*2)%2==0) and "|" or ""
-        local sdsp=it._search~="" and (it._search..cur) or (it._sfocus and cur or "🔍 search...")
-        poolAdd(pool,wid.."_dsbt","Text",{Position=sbPos+Vector2.new(5,2),Text=sdsp,Size=12,Font=FONT,
-            Color=it._search~="" and T.Text or T.SubText,Outline=false,Visible=true,ZIndex=24})
+        local sbPos = listPos + Vector2.new(4, 4)
+        local sbSz  = Vector2.new(iW - 8, 19)
+        if Input.click and over(sbPos, sbSz) then it._sfocus = true
+        elseif Input.click and not over(sbPos, sbSz) then it._sfocus = false end
+        poolAdd(pool, wid.."_dsb",  "Square", {Position=sbPos, Size=sbSz, Filled=true,  Color=T.Surface1,                          Visible=true, ZIndex=92})
+        poolAdd(pool, wid.."_dsbb", "Square", {Position=sbPos, Size=sbSz, Filled=false, Color=it._sfocus and T.Accent or T.Border1, Thickness=1,  Visible=true, ZIndex=93})
+        local cur  = (it._sfocus and math.floor(tick()*2)%2==0) and "|" or ""
+        local sdsp = it._search ~= "" and (it._search..cur) or (it._sfocus and cur or "🔍 search...")
+        poolAdd(pool, wid.."_dsbt", "Text", {Position=sbPos+Vector2.new(5,2), Text=sdsp, Size=12, Font=F,
+            Color=it._search ~= "" and T.Text or T.SubText, Outline=false, Visible=true, ZIndex=94})
+
         if it._sfocus then
-            for kc=8,222 do
+            for kc = 8, 222 do
                 if Input:keyClick(kc) then
-                    if kc==0x08 then it._search=it._search:sub(1,-2)
-                    elseif kc==0x0D then it._sfocus=false
-                    elseif kc==0x20 then it._search=it._search.." "
-                    elseif kc>=0x30 and kc<=0x5A then
-                        local ch=KeyNames[kc]; if ch and #ch==1 then
-                            local sh=Input:shift()
-                            ch=sh and (ShiftMap[ch:lower()] or ch:upper()) or ch:lower()
-                            it._search=it._search..ch
+                    if     kc == 0x08 then it._search = it._search:sub(1,-2)
+                    elseif kc == 0x0D then it._sfocus = false
+                    elseif kc == 0x20 then it._search = it._search.." "
+                    elseif kc >= 0x30 and kc <= 0x5A then
+                        local ch = KeyNames[kc]
+                        if ch and #ch == 1 then
+                            local sh = Input:shift()
+                            ch = sh and (ShiftMap[ch:lower()] or ch:upper()) or ch:lower()
+                            it._search = it._search..ch
                         end
-                    elseif kc==0xBD then it._search=it._search..(Input:shift() and "_" or "-")
+                    elseif kc == 0xBD then
+                        it._search = it._search..(Input:shift() and "_" or "-")
                     end
                 end
             end
-            it.scroll=0
+            it.scroll = 0
         end
 
-        -- Scrollbar
-        local visN=math.min(it.maxVisible,total)
+        -- FIX 2: Scrollbar
+        local visN = math.min(it.maxVisible, total)
         if hasSB then
-            local barH=math.max(14, (listH-sbH_px)*(it.maxVisible/total))
-            local trackH=(listH-sbH_px)-barH
-            local maxSc=math.max(1,total-it.maxVisible)
-            local barY=listPos.Y+sbH_px+trackH*(it.scroll/maxSc)
-            local barX=listPos.X+iW-SBW-SBP
-            local bPos=Vector2.new(barX,barY); local bSz=Vector2.new(SBW,barH)
-            local bHov=over(bPos,bSz)
-            poolAdd(pool,wid.."_sbtrk","Square",{Position=Vector2.new(barX,listPos.Y+sbH_px),Size=Vector2.new(SBW,listH-sbH_px),Filled=true,Color=T.Surface1,Visible=true,ZIndex=21})
-            poolAdd(pool,wid.."_sbbar","Square",{Position=bPos,Size=bSz,Filled=true,Color=(bHov or it._sbDrag) and T.Text or T.Accent,Visible=true,ZIndex=22})
-            if it._clicked and bHov then it._sbDrag=true;it._sbDragY=mpos().Y;it._sbDragSc=it.scroll end
+            local barH   = math.max(14, (listH - sbH_px) * (it.maxVisible / total))
+            local trackH = (listH - sbH_px) - barH
+            local maxSc  = math.max(1, total - it.maxVisible)
+            local barY   = listPos.Y + sbH_px + trackH * (it.scroll / maxSc)
+            local barX   = listPos.X + iW - SBW - SBP
+            local bPos   = Vector2.new(barX, barY)
+            local bSz    = Vector2.new(SBW, barH)
+            local bHov   = over(bPos, bSz)
+            poolAdd(pool, wid.."_sbtrk", "Square", {Position=Vector2.new(barX,listPos.Y+sbH_px), Size=Vector2.new(SBW,listH-sbH_px), Filled=true, Color=T.Surface1, Visible=true, ZIndex=91})
+            poolAdd(pool, wid.."_sbbar", "Square", {Position=bPos, Size=bSz, Filled=true, Color=(bHov or it._sbDrag) and T.Text or T.Accent, Visible=true, ZIndex=92})
+            if Input.click and bHov then it._sbDrag=true; it._sbDragY=mpos().Y; it._sbDragSc=it.scroll end
             if not Input.held then it._sbDrag=false end
-            if it._sbDrag and trackH>0 then
-                local dy=mpos().Y-(it._sbDragY or 0)
-                it.scroll=clamp((it._sbDragSc or 0)+math.floor(dy*(maxSc/trackH)+0.5),0,maxSc)
+            if it._sbDrag and trackH > 0 then
+                local dy = mpos().Y - (it._sbDragY or 0)
+                it.scroll = clamp((it._sbDragSc or 0) + math.floor(dy*(maxSc/trackH)+0.5), 0, maxSc)
             end
         end
 
-        -- Scroll with wheel when hovering list
-        if over(listPos,Vector2.new(iW,listH)) and Input.scroll~=0 then
-            it.scroll=clamp(it.scroll+Input.scroll,0,math.max(0,total-it.maxVisible))
+        -- FIX 2: Mouse wheel scrolls the dropdown list
+        if over(listPos, Vector2.new(iW, listH)) and Input.scroll ~= 0 then
+            it.scroll = clamp(it.scroll + Input.scroll, 0, math.max(0, total - it.maxVisible))
         end
 
         -- Options
-        for vi=1,visN do
-            local oi=vi+it.scroll; local opt=filt[oi]; if not opt then break end
-            local opPos=listPos+Vector2.new(0,(vi-1)*optH+sbH_px+2)
-            local opSz=Vector2.new(optW,optH); local opHov=over(opPos,opSz)
+        for vi = 1, visN do
+            local oi  = vi + it.scroll
+            local opt = filt[oi]
+            if not opt then break end
+            local opPos = listPos + Vector2.new(0, (vi-1)*optH + sbH_px + 2)
+            local opSz  = Vector2.new(optW, optH)
+            local opHov = over(opPos, opSz)
+
             if multi then
-                local sel=it.selected[opt]==true
-                if opHov then poolAdd(pool,wid.."_ohi"..vi,"Square",{Position=opPos,Size=opSz,Filled=true,Color=T.Surface1,Visible=true,ZIndex=21})
-                else poolHide(pool,wid.."_ohi"..vi) end
-                local cp=opPos+Vector2.new(6,5); local cs=Vector2.new(10,10)
-                poolAdd(pool,wid.."_mcb"..vi, "Square",{Position=cp,Size=cs,Filled=true, Color=sel and T.Accent or T.Surface0,Visible=true,ZIndex=22})
-                poolAdd(pool,wid.."_mcbb"..vi,"Square",{Position=cp,Size=cs,Filled=false,Color=T.Border1,Thickness=1,Visible=true,ZIndex=23})
-                poolAdd(pool,wid.."_mot"..vi, "Text",  {Position=opPos+Vector2.new(22,3),Text=opt,Size=13,Font=FONT,Color=sel and T.Accent or T.Text,Outline=false,Visible=true,ZIndex=22})
-                if it._clicked and opHov then
-                    it.selected[opt]=not sel
-                    local out={}; for _,o in ipairs(it.options) do if it.selected[o] then out[#out+1]=o end end
+                local sel = it.selected[opt] == true
+                if opHov then
+                    poolAdd(pool, wid.."_ohi"..vi, "Square", {Position=opPos, Size=opSz, Filled=true, Color=T.Surface1, Visible=true, ZIndex=91})
+                else
+                    poolHide(pool, wid.."_ohi"..vi)
+                end
+                local cp = opPos + Vector2.new(6,5)
+                local cs = Vector2.new(10,10)
+                poolAdd(pool, wid.."_mcb"..vi,  "Square", {Position=cp, Size=cs, Filled=true,  Color=sel and T.Accent or T.Surface0, Visible=true, ZIndex=92})
+                poolAdd(pool, wid.."_mcbb"..vi, "Square", {Position=cp, Size=cs, Filled=false, Color=T.Border1, Thickness=1, Visible=true, ZIndex=93})
+                poolAdd(pool, wid.."_mot"..vi,  "Text",   {Position=opPos+Vector2.new(22,3), Text=opt, Size=13, Font=F, Color=sel and T.Accent or T.Text, Outline=false, Visible=true, ZIndex=92})
+                if Input.click and opHov then
+                    it.selected[opt] = not sel
+                    local out={}
+                    for _,o in ipairs(it.options) do if it.selected[o] then out[#out+1]=o end end
                     it.cb(out)
                 end
             else
-                local sel=(opt==it.value)
+                local sel = (opt == it.value)
                 if opHov or sel then
-                    poolAdd(pool,wid.."_ohi"..vi,"Square",{Position=opPos,Size=opSz,Filled=true,Color=sel and T.AccentDark or T.Surface1,Visible=true,ZIndex=21})
-                else poolHide(pool,wid.."_ohi"..vi) end
-                poolAdd(pool,wid.."_ot"..vi,"Text",{Position=opPos+Vector2.new(8,3),Text=opt,Size=13,Font=FONT,Color=sel and T.Accent or T.Text,Outline=false,Visible=true,ZIndex=22})
-                if it._clicked and opHov then it.value=opt;it.cb(opt);self._openDropId=nil;it._search="" end
+                    poolAdd(pool, wid.."_ohi"..vi, "Square", {Position=opPos, Size=opSz, Filled=true, Color=sel and T.AccentDark or T.Surface1, Visible=true, ZIndex=91})
+                else
+                    poolHide(pool, wid.."_ohi"..vi)
+                end
+                poolAdd(pool, wid.."_ot"..vi, "Text", {Position=opPos+Vector2.new(8,3), Text=opt, Size=13, Font=F, Color=sel and T.Accent or T.Text, Outline=false, Visible=true, ZIndex=92})
+                if Input.click and opHov then
+                    it.value = opt; it.cb(opt)
+                    self._openDropId = nil; self._openDropData = nil
+                    it._search = ""
+                end
             end
         end
-        for vi=visN+1,it.maxVisible+4 do
-            poolHide(pool,wid.."_ohi"..vi);poolHide(pool,wid.."_ot"..vi)
-            poolHide(pool,wid.."_mcb"..vi);poolHide(pool,wid.."_mcbb"..vi);poolHide(pool,wid.."_mot"..vi)
+
+        -- Hide excess option slots
+        for vi = visN+1, it.maxVisible+4 do
+            poolHide(pool, wid.."_ohi"..vi); poolHide(pool, wid.."_ot"..vi)
+            poolHide(pool, wid.."_mcb"..vi); poolHide(pool, wid.."_mcbb"..vi); poolHide(pool, wid.."_mot"..vi)
         end
-        return listH+4
+
+        poolFlush(self._overlayPool)
     end
 
-    -- ── Widget renderer ──────────────────────────────────────────────────
-    function WIN:_widget(it,pool,wid,wx,wy,iW,FONT)
-        local h=0
+    -- ── Widget renderer ──────────────────────────────────────────────────────
+    -- FIX 3: All widgets check clip bounds before rendering; returns height consumed.
+    function WIN:_widget(it, pool, wid, wx, wy, iW, F)
+        local clip = self._contClip
+        -- If widget top is below content area or widget is scrolled above, skip drawing
+        -- (still return height so layout is correct)
+        local visible = (wy >= clip.top - 4) and (wy <= clip.bottom + 4)
+        local h = 0
 
-        if it.type=="separator" then
-            poolAdd(pool,wid.."_sep","Square",{Position=Vector2.new(wx,wy+5),Size=Vector2.new(iW,1),Filled=true,Color=T.Border0,Visible=true,ZIndex=6})
-            h=12
+        if it.type == "separator" then
+            if visible then
+                poolAdd(pool, wid.."_sep", "Square", {Position=Vector2.new(wx,wy+5), Size=Vector2.new(iW,1), Filled=true, Color=T.Border0, Visible=true, ZIndex=6})
+            else poolHide(pool, wid.."_sep") end
+            h = 12
 
-        elseif it.type=="label" then
-            poolAdd(pool,wid.."_lbl","Text",{Position=Vector2.new(wx,wy+2),Text=it.label,Size=13,Font=FONT,Color=it.color or T.SubText,Outline=false,Visible=true,ZIndex=6})
-            h=20
+        elseif it.type == "label" then
+            if visible then
+                poolAdd(pool, wid.."_lbl", "Text", {Position=Vector2.new(wx,wy+2), Text=it.label, Size=13, Font=F, Color=it.color or T.SubText, Outline=false, Visible=true, ZIndex=6})
+            else poolHide(pool, wid.."_lbl") end
+            h = 20
 
-        elseif it.type=="toggle" then
-            -- Animate knob
-            it._anim=lerp(it._anim or (it.value and 1 or 0), it.value and 1 or 0, 0.22)
-            local a=it._anim
-            local trkW,trkH=28,14
-            local trkPos=Vector2.new(wx+iW-trkW,wy+1)
-            poolAdd(pool,wid.."_trk", "Square",{Position=trkPos,Size=Vector2.new(trkW,trkH),Filled=true, Color=lerpC(T.Surface1,T.Accent,a),Visible=true,ZIndex=6})
-            poolAdd(pool,wid.."_trkb","Square",{Position=trkPos,Size=Vector2.new(trkW,trkH),Filled=false,Color=lerpC(T.Border1,T.Accent,a),Thickness=1,Visible=true,ZIndex=7})
-            local kx=trkPos.X+2+a*(trkW-14)
-            poolAdd(pool,wid.."_knb","Square",{Position=Vector2.new(kx,trkPos.Y+2),Size=Vector2.new(10,10),Filled=true,Color=T.Text,Visible=true,ZIndex=8})
-            poolAdd(pool,wid.."_lbl","Text",  {Position=Vector2.new(wx,wy+1),Text=it.label,Size=13,Font=FONT,Color=it.value and T.Text or T.SubText,Outline=false,Visible=true,ZIndex=6})
-            if Input.click and over(Vector2.new(wx,wy),Vector2.new(iW,16)) then it.value=not it.value;it.cb(it.value) end
-            h=22
-
-        elseif it.type=="button" then
-            local BTN_H=24
-            local bp=Vector2.new(wx,wy); local bs=Vector2.new(iW,BTN_H); local hov=over(bp,bs)
-            local bgC, bdC
-            if it.color then
-                bgC=hov and lerpC(it.color,T.Text,0.2) or lerpC(it.color,T.Body,0.3)
-                bdC=it.color
+        elseif it.type == "toggle" then
+            it._anim = lerp(it._anim or (it.value and 1 or 0), it.value and 1 or 0, 0.22)
+            local a = it._anim
+            local trkW, trkH = 28, 14
+            local trkPos = Vector2.new(wx+iW-trkW, wy+1)
+            if visible then
+                poolAdd(pool, wid.."_trk",  "Square", {Position=trkPos, Size=Vector2.new(trkW,trkH), Filled=true,  Color=lerpC(T.Surface1,T.Accent,a), Visible=true, ZIndex=6})
+                poolAdd(pool, wid.."_trkb", "Square", {Position=trkPos, Size=Vector2.new(trkW,trkH), Filled=false, Color=lerpC(T.Border1,T.Accent,a),  Thickness=1,  Visible=true, ZIndex=7})
+                local kx = trkPos.X + 2 + a*(trkW-14)
+                poolAdd(pool, wid.."_knb",  "Square", {Position=Vector2.new(kx,trkPos.Y+2), Size=Vector2.new(10,10), Filled=true, Color=T.Text, Visible=true, ZIndex=8})
+                poolAdd(pool, wid.."_lbl",  "Text",   {Position=Vector2.new(wx,wy+1), Text=it.label, Size=13, Font=F, Color=it.value and T.Text or T.SubText, Outline=false, Visible=true, ZIndex=6})
             else
-                bgC=hov and T.AccentDark or T.Surface1
-                bdC=hov and T.Accent or T.Border0
+                poolHide(pool,wid.."_trk"); poolHide(pool,wid.."_trkb"); poolHide(pool,wid.."_knb"); poolHide(pool,wid.."_lbl")
             end
-            poolAdd(pool,wid.."_btn", "Square",{Position=bp,Size=bs,Filled=true, Color=bgC,Visible=true,ZIndex=6})
-            poolAdd(pool,wid.."_btnb","Square",{Position=bp,Size=bs,Filled=false,Color=bdC,Thickness=1,Visible=true,ZIndex=7})
-            local _bw=textW(it.label,13)
-            poolAdd(pool,wid.."_btnt","Text",{Position=Vector2.new(wx+iW/2-_bw/2,wy+5),Text=it.label,Size=13,Font=FONT,Color=T.Text,Center=false,Outline=false,Visible=true,ZIndex=7})
-            if Input.click and hov then it.cb() end
-            h=BTN_H+4
+            if visible and Input.click and over(Vector2.new(wx,wy), Vector2.new(iW,16)) then
+                it.value = not it.value; it.cb(it.value)
+            end
+            h = 22
 
-        elseif it.type=="slider" then
-            local vs=tostring(it.value)..it.suffix
-            poolAdd(pool,wid.."_lbl","Text",{Position=Vector2.new(wx,wy),Text=it.label,Size=13,Font=FONT,Color=T.Text,Outline=false,Visible=true,ZIndex=6})
-            poolAdd(pool,wid.."_val","Text",{Position=Vector2.new(wx+iW-textW(vs,12),wy),Text=vs,Size=12,Font=FONT,Color=T.Accent,Outline=false,Visible=true,ZIndex=6})
-            local tP=Vector2.new(wx,wy+17); local tS=Vector2.new(iW,5)
-            poolAdd(pool,wid.."_trk", "Square",{Position=tP,Size=tS,Filled=true,Color=T.Surface1,Visible=true,ZIndex=6})
-            local pct=clamp((it.value-it.min)/(it.max-it.min),0,1)
-            local fw=math.max(4,tS.X*pct)
-            poolAdd(pool,wid.."_fil","Square",{Position=tP,Size=Vector2.new(fw,tS.Y),Filled=true,Color=T.Accent,Visible=true,ZIndex=7})
-            poolAdd(pool,wid.."_knb","Square",{Position=Vector2.new(tP.X+fw-4,tP.Y-3),Size=Vector2.new(8,11),Filled=true,Color=T.Text,Visible=true,ZIndex=8})
-            if Input.click and over(tP-Vector2.new(0,5),tS+Vector2.new(0,12)) then self._sliderDrag=it end
-            if self._sliderDrag==it then
+        elseif it.type == "button" then
+            local BTN_H = 24
+            local bp = Vector2.new(wx,wy); local bs = Vector2.new(iW,BTN_H); local hov = visible and over(bp,bs)
+            if visible then
+                local bgC, bdC
+                if it.color then
+                    bgC = hov and lerpC(it.color,T.Text,0.2) or lerpC(it.color,T.Body,0.3)
+                    bdC = it.color
+                else
+                    bgC = hov and T.AccentDark or T.Surface1
+                    bdC = hov and T.Accent or T.Border0
+                end
+                poolAdd(pool, wid.."_btn",  "Square", {Position=bp, Size=bs, Filled=true,  Color=bgC, Visible=true, ZIndex=6})
+                poolAdd(pool, wid.."_btnb", "Square", {Position=bp, Size=bs, Filled=false, Color=bdC, Thickness=1,  Visible=true, ZIndex=7})
+                local _bw = textW(it.label,13)
+                poolAdd(pool, wid.."_btnt", "Text",   {Position=Vector2.new(wx+iW/2-_bw/2,wy+5), Text=it.label, Size=13, Font=F, Color=T.Text, Center=false, Outline=false, Visible=true, ZIndex=7})
+                if Input.click and hov then it.cb() end
+            else
+                poolHide(pool,wid.."_btn"); poolHide(pool,wid.."_btnb"); poolHide(pool,wid.."_btnt")
+            end
+            h = BTN_H + 4
+
+        elseif it.type == "slider" then
+            local vs = tostring(it.value)..it.suffix
+            local tP = Vector2.new(wx,wy+17); local tS = Vector2.new(iW,5)
+            if visible then
+                poolAdd(pool, wid.."_lbl", "Text",   {Position=Vector2.new(wx,wy), Text=it.label, Size=13, Font=F, Color=T.Text, Outline=false, Visible=true, ZIndex=6})
+                poolAdd(pool, wid.."_val", "Text",   {Position=Vector2.new(wx+iW-textW(vs,12),wy), Text=vs, Size=12, Font=F, Color=T.Accent, Outline=false, Visible=true, ZIndex=6})
+                poolAdd(pool, wid.."_trk", "Square", {Position=tP, Size=tS, Filled=true, Color=T.Surface1, Visible=true, ZIndex=6})
+                local pct = clamp((it.value-it.min)/(it.max-it.min),0,1)
+                local fw  = math.max(4, tS.X*pct)
+                poolAdd(pool, wid.."_fil", "Square", {Position=tP, Size=Vector2.new(fw,tS.Y), Filled=true, Color=T.Accent, Visible=true, ZIndex=7})
+                poolAdd(pool, wid.."_knb", "Square", {Position=Vector2.new(tP.X+fw-4,tP.Y-3), Size=Vector2.new(8,11), Filled=true, Color=T.Text, Visible=true, ZIndex=8})
+            else
+                poolHide(pool,wid.."_lbl"); poolHide(pool,wid.."_val"); poolHide(pool,wid.."_trk"); poolHide(pool,wid.."_fil"); poolHide(pool,wid.."_knb")
+            end
+            if visible and Input.click and over(tP-Vector2.new(0,5), tS+Vector2.new(0,12)) then
+                self._sliderDrag = it
+            end
+            if self._sliderDrag == it then
                 if Input.held then
-                    local p=clamp((mpos().X-tP.X)/tS.X,0,1)
-                    it.value=clamp(math.floor(it.min+(it.max-it.min)*p+0.5),it.min,it.max);it.cb(it.value)
-                else self._sliderDrag=nil end
+                    local p = clamp((mpos().X-tP.X)/tS.X,0,1)
+                    it.value = clamp(math.floor(it.min+(it.max-it.min)*p+0.5),it.min,it.max); it.cb(it.value)
+                else self._sliderDrag = nil end
             end
-            h=34
+            h = 34
 
-        elseif it.type=="dropdown" or it.type=="multidropdown" then
-            local multi=(it.type=="multidropdown")
-            if not it._sid then it._sid={}; it._wasM1=false end
-            local m1=Input.held; it._clicked=m1 and not it._wasM1
-            local ddP=Vector2.new(wx,wy+14); local ddS=Vector2.new(iW,22)
-            local isOpen=(self._openDropId==it._sid)
-            local estListH=(math.min(it.maxVisible,#it.options)*20+4+28)
-            local lPos=ddP+Vector2.new(0,ddS.Y+2); local lSz=Vector2.new(iW,estListH)
+        elseif it.type == "dropdown" or it.type == "multidropdown" then
+            -- FIX 1: Dropdown no longer pushes layout. It registers anchor position for overlay.
+            local multi = (it.type == "multidropdown")
+            if not it._sid then it._sid = {}; it._wasM1 = false end
+            local m1 = Input.held; it._clicked = m1 and not it._wasM1
+
+            local ddP = Vector2.new(wx, wy+14); local ddS = Vector2.new(iW, 22)
+            local isOpen = (self._openDropId == it._sid)
 
             local disp
             if multi then
-                local sl={}; for _,o in ipairs(it.options) do if it.selected[o] then sl[#sl+1]=o end end
-                disp=#sl==0 and "None" or (#sl.."/"..#it.options.." selected")
-            else disp=it.value end
+                local sl={}
+                for _,o in ipairs(it.options) do if it.selected[o] then sl[#sl+1]=o end end
+                disp = #sl==0 and "None" or (#sl.."/"..#it.options.." selected")
+            else disp = it.value end
 
-            poolAdd(pool,wid.."_ddlbl","Text",    {Position=Vector2.new(wx,wy),Text=it.label,Size=12,Font=FONT,Color=T.SubText,Outline=false,Visible=true,ZIndex=6})
-            poolAdd(pool,wid.."_ddbg", "Square",  {Position=ddP,Size=ddS,Filled=true, Color=T.Surface1,Visible=true,ZIndex=6})
-            poolAdd(pool,wid.."_ddb",  "Square",  {Position=ddP,Size=ddS,Filled=false,Color=isOpen and T.Accent or T.Border0,Thickness=1,Visible=true,ZIndex=7})
-            poolAdd(pool,wid.."_ddv",  "Text",    {Position=ddP+Vector2.new(6,4),Text=disp,Size=13,Font=FONT,Color=T.Text,Outline=false,Visible=true,ZIndex=7})
-            local ax,ay=ddP.X+ddS.X-14,ddP.Y+11
-            poolAdd(pool,wid.."_ddarr","Triangle",{PointA=Vector2.new(ax,ay-4),PointB=Vector2.new(ax+7,ay-4),PointC=Vector2.new(ax+3.5,ay+3),Filled=true,Color=isOpen and T.Accent or T.SubText,Visible=true,ZIndex=7})
-
-            if it._clicked then
-                if over(ddP,ddS) then
-                    if self._openDropId==it._sid then self._openDropId=nil
-                    elseif self._openDropId==nil then self._openDropId=it._sid end
-                elseif isOpen and not over(lPos,lSz) then self._openDropId=nil end
+            if visible then
+                poolAdd(pool, wid.."_ddlbl", "Text",     {Position=Vector2.new(wx,wy), Text=it.label, Size=12, Font=F, Color=T.SubText, Outline=false, Visible=true, ZIndex=6})
+                poolAdd(pool, wid.."_ddbg",  "Square",   {Position=ddP, Size=ddS, Filled=true,  Color=T.Surface1,                    Visible=true, ZIndex=6})
+                poolAdd(pool, wid.."_ddb",   "Square",   {Position=ddP, Size=ddS, Filled=false, Color=isOpen and T.Accent or T.Border0, Thickness=1, Visible=true, ZIndex=7})
+                poolAdd(pool, wid.."_ddv",   "Text",     {Position=ddP+Vector2.new(6,4), Text=disp, Size=13, Font=F, Color=T.Text, Outline=false, Visible=true, ZIndex=7})
+                local ax,ay = ddP.X+ddS.X-14, ddP.Y+11
+                poolAdd(pool, wid.."_ddarr", "Triangle", {PointA=Vector2.new(ax,ay-4),PointB=Vector2.new(ax+7,ay-4),PointC=Vector2.new(ax+3.5,ay+3), Filled=true, Color=isOpen and T.Accent or T.SubText, Visible=true, ZIndex=7})
+            else
+                poolHide(pool,wid.."_ddlbl"); poolHide(pool,wid.."_ddbg"); poolHide(pool,wid.."_ddb"); poolHide(pool,wid.."_ddv"); poolHide(pool,wid.."_ddarr")
             end
-            local openNow=(self._openDropId==it._sid)
-            if openNow then h=h+self:_ddList(pool,wid,it,ddP,ddS,iW,FONT,multi) end
-            it._wasM1=m1; h=h+42
 
-        elseif it.type=="colorpicker" then
-            local swP=Vector2.new(wx,wy); local swW=20
-            poolAdd(pool,wid.."_sw",  "Square",{Position=swP,Size=Vector2.new(swW,18),Filled=true, Color=it.value,Visible=true,ZIndex=6})
-            poolAdd(pool,wid.."_swb", "Square",{Position=swP,Size=Vector2.new(swW,18),Filled=false,Color=T.Border1,Thickness=1,Visible=true,ZIndex=7})
-            poolAdd(pool,wid.."_lbl", "Text",  {Position=swP+Vector2.new(swW+6,2),Text=it.label,Size=13,Font=FONT,Color=T.Text,Outline=false,Visible=true,ZIndex=6})
-            local r,g,b=math.floor(it.value.R*255),math.floor(it.value.G*255),math.floor(it.value.B*255)
-            local rgb=r..","..g..","..b
-            poolAdd(pool,wid.."_rgb","Text",{Position=Vector2.new(wx+iW-textW(rgb,11),wy+2),Text=rgb,Size=11,Font=FONT,Color=T.SubText,Outline=false,Visible=true,ZIndex=6})
-            if Input.click and over(swP,Vector2.new(iW,18)) then it._open=not it._open end
-            h=24
+            if visible and it._clicked then
+                if over(ddP, ddS) then
+                    if self._openDropId == it._sid then
+                        self._openDropId = nil; self._openDropData = nil
+                    else
+                        self._openDropId   = it._sid
+                        self._openDropData = it
+                        -- Store screen anchor so overlay knows where to draw
+                        it._overlayAnchor  = ddP
+                        it._overlayWidth   = iW
+                    end
+                elseif isOpen then
+                    -- click outside: close (handled in overlay render)
+                end
+            end
+
+            -- Keep anchor updated every frame (dropdown header moves when window moves)
+            if isOpen and visible then
+                it._overlayAnchor = ddP
+                it._overlayWidth  = iW
+            end
+
+            it._wasM1 = m1
+            -- FIX 1: height is FIXED — no extra space for the open list
+            h = 42
+
+        elseif it.type == "colorpicker" then
+            local swP = Vector2.new(wx,wy); local swW = 20
+            if visible then
+                poolAdd(pool, wid.."_sw",  "Square", {Position=swP, Size=Vector2.new(swW,18), Filled=true,  Color=it.value, Visible=true, ZIndex=6})
+                poolAdd(pool, wid.."_swb", "Square", {Position=swP, Size=Vector2.new(swW,18), Filled=false, Color=T.Border1, Thickness=1, Visible=true, ZIndex=7})
+                poolAdd(pool, wid.."_lbl", "Text",   {Position=swP+Vector2.new(swW+6,2), Text=it.label, Size=13, Font=F, Color=T.Text, Outline=false, Visible=true, ZIndex=6})
+                local r,g,b = math.floor(it.value.R*255),math.floor(it.value.G*255),math.floor(it.value.B*255)
+                local rgb = r..","..g..","..b
+                poolAdd(pool, wid.."_rgb", "Text", {Position=Vector2.new(wx+iW-textW(rgb,11),wy+2), Text=rgb, Size=11, Font=F, Color=T.SubText, Outline=false, Visible=true, ZIndex=6})
+                if Input.click and over(swP, Vector2.new(iW,18)) then it._open = not it._open end
+            else
+                poolHide(pool,wid.."_sw"); poolHide(pool,wid.."_swb"); poolHide(pool,wid.."_lbl"); poolHide(pool,wid.."_rgb")
+            end
+            h = 24
             if it._open then
-                local pW,pH=iW,90; local pPos=Vector2.new(wx,wy+24)
-                local strips=16
-                for si=1,strips do
-                    local vv=1-(si-1)/(strips-1)
-                    poolAdd(pool,wid.."_sv"..si,"Square",{
-                        Position=pPos+Vector2.new(0,(si-1)*(pH/strips)),
-                        Size=Vector2.new(pW,pH/strips+1),
-                        Filled=true,Color=hsvToRgb(it.h,it.s,vv),Visible=true,ZIndex=7})
+                local pW,pH = iW,90
+                local pPos  = Vector2.new(wx, wy+24)
+                local strips = 16
+                if visible then
+                    for si=1,strips do
+                        local vv=1-(si-1)/(strips-1)
+                        poolAdd(pool, wid.."_sv"..si, "Square", {
+                            Position=pPos+Vector2.new(0,(si-1)*(pH/strips)),
+                            Size=Vector2.new(pW,pH/strips+1),
+                            Filled=true, Color=hsvToRgb(it.h,it.s,vv), Visible=true, ZIndex=7})
+                    end
+                    poolAdd(pool, wid.."_palb", "Square", {Position=pPos, Size=Vector2.new(pW,pH), Filled=false, Color=T.Border1, Thickness=1, Visible=true, ZIndex=10})
+                    local cX,cY = pPos.X+it.s*pW, pPos.Y+(1-it.v)*pH
+                    poolAdd(pool, wid.."_csh", "Line", {From=Vector2.new(pPos.X,cY),  To=Vector2.new(pPos.X+pW,cY), Thickness=1, Color=T.Text, Visible=true, ZIndex=9})
+                    poolAdd(pool, wid.."_csv", "Line", {From=Vector2.new(cX,pPos.Y),  To=Vector2.new(cX,pPos.Y+pH), Thickness=1, Color=T.Text, Visible=true, ZIndex=9})
+                    local hH = 12; local hPos = Vector2.new(wx, wy+24+pH+5); local hSegs = 24
+                    for hi=1,hSegs do
+                        poolAdd(pool, wid.."_h"..hi, "Square", {
+                            Position=hPos+Vector2.new((hi-1)*(iW/hSegs),0),
+                            Size=Vector2.new(iW/hSegs+1,hH),
+                            Filled=true, Color=hsvToRgb((hi-1)/hSegs,1,1), Visible=true, ZIndex=7})
+                    end
+                    local hcX = hPos.X+it.h*iW
+                    poolAdd(pool, wid.."_hcur", "Square", {Position=Vector2.new(hcX-2,hPos.Y-1), Size=Vector2.new(4,hH+2), Filled=false, Color=T.Text, Thickness=1, Visible=true, ZIndex=9})
+                    if Input.click and over(pPos,Vector2.new(pW,pH)) then it.dragSV=true end
+                    local hH2=12; local hPos2=Vector2.new(wx,wy+24+pH+5)
+                    if Input.click and over(hPos2,Vector2.new(iW,hH2)) then it.dragH=true end
                 end
-                poolAdd(pool,wid.."_palb","Square",{Position=pPos,Size=Vector2.new(pW,pH),Filled=false,Color=T.Border1,Thickness=1,Visible=true,ZIndex=10})
-                local cX,cY=pPos.X+it.s*pW, pPos.Y+(1-it.v)*pH
-                poolAdd(pool,wid.."_csh","Line",{From=Vector2.new(pPos.X,cY),To=Vector2.new(pPos.X+pW,cY),Thickness=1,Color=T.Text,Visible=true,ZIndex=9})
-                poolAdd(pool,wid.."_csv","Line",{From=Vector2.new(cX,pPos.Y),To=Vector2.new(cX,pPos.Y+pH),Thickness=1,Color=T.Text,Visible=true,ZIndex=9})
-                local hH=12; local hPos=Vector2.new(wx,wy+24+pH+5); local hSegs=24
-                for hi=1,hSegs do
-                    poolAdd(pool,wid.."_h"..hi,"Square",{
-                        Position=hPos+Vector2.new((hi-1)*(iW/hSegs),0),
-                        Size=Vector2.new(iW/hSegs+1,hH),
-                        Filled=true,Color=hsvToRgb((hi-1)/hSegs,1,1),Visible=true,ZIndex=7})
-                end
-                local hcX=hPos.X+it.h*iW
-                poolAdd(pool,wid.."_hcur","Square",{Position=Vector2.new(hcX-2,hPos.Y-1),Size=Vector2.new(4,hH+2),Filled=false,Color=T.Text,Thickness=1,Visible=true,ZIndex=9})
-                if Input.click and over(pPos,Vector2.new(pW,pH)) then it.dragSV=true end
-                if Input.click and over(hPos,Vector2.new(iW,hH)) then it.dragH=true end
-                if not Input.held then it.dragSV=false;it.dragH=false end
+                if not Input.held then it.dragSV=false; it.dragH=false end
                 if it.dragSV then
                     local m=mpos(); it.s=clamp((m.X-pPos.X)/pW,0,1); it.v=1-clamp((m.Y-pPos.Y)/pH,0,1)
-                    it.value=hsvToRgb(it.h,it.s,it.v);it.cb(it.value)
+                    it.value=hsvToRgb(it.h,it.s,it.v); it.cb(it.value)
                 end
                 if it.dragH then
-                    it.h=clamp((mpos().X-hPos.X)/iW,0,1)
-                    it.value=hsvToRgb(it.h,it.s,it.v);it.cb(it.value)
+                    local hPos3=Vector2.new(wx,wy+24+90+5)
+                    it.h=clamp((mpos().X-hPos3.X)/iW,0,1)
+                    it.value=hsvToRgb(it.h,it.s,it.v); it.cb(it.value)
                 end
-                h=h+pH+hH+12
+                h = h + 90 + 12 + 12
             end
 
-        elseif it.type=="keybind" then
-            local ks=it.listening and "[ ... ]" or ("[ "..keyName(it.value).." ]")
-            local kw=textW(ks,12)+10; local kp=Vector2.new(wx+iW-kw,wy); local ks2=Vector2.new(kw,18)
-            poolAdd(pool,wid.."_lbl",  "Text",  {Position=Vector2.new(wx,wy+2),Text=it.label,Size=13,Font=FONT,Color=T.Text,Outline=false,Visible=true,ZIndex=6})
-            poolAdd(pool,wid.."_kbg",  "Square",{Position=kp,Size=ks2,Filled=true, Color=it.listening and T.AccentDark or T.Surface1,Visible=true,ZIndex=6})
-            poolAdd(pool,wid.."_kbb",  "Square",{Position=kp,Size=ks2,Filled=false,Color=it.listening and T.Accent or T.Border0,Thickness=1,Visible=true,ZIndex=7})
-            poolAdd(pool,wid.."_kbtx", "Text",  {Position=kp+Vector2.new(4,2),Text=ks,Size=12,Font=FONT,Color=it.listening and T.Accent or T.SubText,Outline=false,Visible=true,ZIndex=7})
-            if Input.click and over(kp,ks2) then it.listening=true;self._keybindTarget=it end
+        elseif it.type == "keybind" then
+            local ks  = it.listening and "[ ... ]" or ("[ "..keyName(it.value).." ]")
+            local kw  = textW(ks,12)+10; local kp = Vector2.new(wx+iW-kw,wy); local ks2 = Vector2.new(kw,18)
+            if visible then
+                poolAdd(pool, wid.."_lbl",  "Text",   {Position=Vector2.new(wx,wy+2), Text=it.label, Size=13, Font=F, Color=T.Text, Outline=false, Visible=true, ZIndex=6})
+                poolAdd(pool, wid.."_kbg",  "Square", {Position=kp, Size=ks2, Filled=true,  Color=it.listening and T.AccentDark or T.Surface1, Visible=true, ZIndex=6})
+                poolAdd(pool, wid.."_kbb",  "Square", {Position=kp, Size=ks2, Filled=false, Color=it.listening and T.Accent or T.Border0, Thickness=1, Visible=true, ZIndex=7})
+                poolAdd(pool, wid.."_kbtx", "Text",   {Position=kp+Vector2.new(4,2), Text=ks, Size=12, Font=F, Color=it.listening and T.Accent or T.SubText, Outline=false, Visible=true, ZIndex=7})
+                if Input.click and over(kp,ks2) then it.listening=true; self._keybindTarget=it end
+            else
+                poolHide(pool,wid.."_lbl"); poolHide(pool,wid.."_kbg"); poolHide(pool,wid.."_kbb"); poolHide(pool,wid.."_kbtx")
+            end
             if it.listening and self._keybindTarget==it then
                 for kc=1,255 do
                     if kc~=1 and kc~=2 and Input:keyClick(kc) then
-                        if kc~=0x1B then it.value=kc;it.cb(kc) end
-                        it.listening=false;self._keybindTarget=nil;break
+                        if kc~=0x1B then it.value=kc; it.cb(kc) end
+                        it.listening=false; self._keybindTarget=nil; break
                     end
                 end
             end
-            h=24
+            h = 24
 
-        elseif it.type=="textbox" then
-            local tP=Vector2.new(wx,wy+15); local tS=Vector2.new(iW,22)
-            local foc=(self._textboxTarget==it)
-            local cur=(foc and math.floor(tick()*2)%2==0) and "|" or ""
-            local disp=it.value..cur
-            if disp=="" then disp=foc and cur or it.placeholder end
-            poolAdd(pool,wid.."_lbl",  "Text",  {Position=Vector2.new(wx,wy),Text=it.label,Size=12,Font=FONT,Color=T.SubText,Outline=false,Visible=true,ZIndex=6})
-            poolAdd(pool,wid.."_tbbg", "Square",{Position=tP,Size=tS,Filled=true, Color=T.Surface1,Visible=true,ZIndex=6})
-            poolAdd(pool,wid.."_tbb",  "Square",{Position=tP,Size=tS,Filled=false,Color=foc and T.Accent or T.Border0,Thickness=1,Visible=true,ZIndex=7})
-            poolAdd(pool,wid.."_tbx",  "Text",  {Position=tP+Vector2.new(6,4),Text=disp,Size=13,Font=FONT,Color=(it.value~="" or foc) and T.Text or T.SubText,Outline=false,Visible=true,ZIndex=7})
-            if Input.click then
+        elseif it.type == "textbox" then
+            local tP  = Vector2.new(wx,wy+15); local tS = Vector2.new(iW,22)
+            local foc = (self._textboxTarget == it)
+            local cur = (foc and math.floor(tick()*2)%2==0) and "|" or ""
+            local disp = it.value..cur
+            if disp == "" then disp = foc and cur or it.placeholder end
+            if visible then
+                poolAdd(pool, wid.."_lbl",  "Text",   {Position=Vector2.new(wx,wy), Text=it.label, Size=12, Font=F, Color=T.SubText, Outline=false, Visible=true, ZIndex=6})
+                poolAdd(pool, wid.."_tbbg", "Square", {Position=tP, Size=tS, Filled=true,  Color=T.Surface1,                       Visible=true, ZIndex=6})
+                poolAdd(pool, wid.."_tbb",  "Square", {Position=tP, Size=tS, Filled=false, Color=foc and T.Accent or T.Border0, Thickness=1, Visible=true, ZIndex=7})
+                poolAdd(pool, wid.."_tbx",  "Text",   {Position=tP+Vector2.new(6,4), Text=disp, Size=13, Font=F, Color=(it.value~="" or foc) and T.Text or T.SubText, Outline=false, Visible=true, ZIndex=7})
+            else
+                poolHide(pool,wid.."_lbl"); poolHide(pool,wid.."_tbbg"); poolHide(pool,wid.."_tbb"); poolHide(pool,wid.."_tbx")
+            end
+            if visible and Input.click then
                 if over(tP,tS) then self._textboxTarget=it
                 elseif self._textboxTarget==it then self._textboxTarget=nil end
             end
             if foc then
                 for kc=8,222 do
                     if Input:keyClick(kc) then
-                        if kc==0x08 then it.value=it.value:sub(1,-2);it.cb(it.value)
+                        if     kc==0x08 then it.value=it.value:sub(1,-2); it.cb(it.value)
                         elseif kc==0x0D then self._textboxTarget=nil
-                        elseif kc==0x20 then it.value=it.value.." ";it.cb(it.value)
-                        elseif kc==0xBD then it.value=it.value..(Input:shift() and "_" or "-");it.cb(it.value)
+                        elseif kc==0x20 then it.value=it.value.." "; it.cb(it.value)
+                        elseif kc==0xBD then it.value=it.value..(Input:shift() and "_" or "-"); it.cb(it.value)
                         elseif kc>=0x30 and kc<=0x5A then
-                            local ch=KeyNames[kc]; if ch and #ch==1 then
+                            local ch=KeyNames[kc]
+                            if ch and #ch==1 then
                                 local sh=Input:shift()
                                 ch=sh and (ShiftMap[ch:lower()] or ch:upper()) or ch:lower()
-                                it.value=it.value..ch;it.cb(it.value)
+                                it.value=it.value..ch; it.cb(it.value)
                             end
                         end
                     end
                 end
             end
-            h=44
+            h = 44
 
-        elseif it.type=="settings_keybind" then
-            local ks=it.listening and "[ ... ]" or ("[ "..keyName(self.MenuKey).." ]")
-            local kw=textW(ks,12)+10; local kp=Vector2.new(wx+iW-kw,wy); local ks2=Vector2.new(kw,18)
-            poolAdd(pool,wid.."_lbl",  "Text",  {Position=Vector2.new(wx,wy+2),Text=it.label,Size=13,Font=FONT,Color=T.Text,Outline=false,Visible=true,ZIndex=6})
-            poolAdd(pool,wid.."_kbg",  "Square",{Position=kp,Size=ks2,Filled=true, Color=it.listening and T.AccentDark or T.Surface1,Visible=true,ZIndex=6})
-            poolAdd(pool,wid.."_kbb",  "Square",{Position=kp,Size=ks2,Filled=false,Color=it.listening and T.Accent or T.Border0,Thickness=1,Visible=true,ZIndex=7})
-            poolAdd(pool,wid.."_kbtx", "Text",  {Position=kp+Vector2.new(4,2),Text=ks,Size=12,Font=FONT,Color=it.listening and T.Accent or T.SubText,Outline=false,Visible=true,ZIndex=7})
-            if Input.click and over(kp,ks2) then it.listening=true;self._settingsListen=true end
+        elseif it.type == "settings_keybind" then
+            local ks  = it.listening and "[ ... ]" or ("[ "..keyName(self.MenuKey).." ]")
+            local kw  = textW(ks,12)+10; local kp = Vector2.new(wx+iW-kw,wy); local ks2 = Vector2.new(kw,18)
+            if visible then
+                poolAdd(pool, wid.."_lbl",  "Text",   {Position=Vector2.new(wx,wy+2), Text=it.label, Size=13, Font=F, Color=T.Text, Outline=false, Visible=true, ZIndex=6})
+                poolAdd(pool, wid.."_kbg",  "Square", {Position=kp, Size=ks2, Filled=true,  Color=it.listening and T.AccentDark or T.Surface1, Visible=true, ZIndex=6})
+                poolAdd(pool, wid.."_kbb",  "Square", {Position=kp, Size=ks2, Filled=false, Color=it.listening and T.Accent or T.Border0, Thickness=1, Visible=true, ZIndex=7})
+                poolAdd(pool, wid.."_kbtx", "Text",   {Position=kp+Vector2.new(4,2), Text=ks, Size=12, Font=F, Color=it.listening and T.Accent or T.SubText, Outline=false, Visible=true, ZIndex=7})
+                if Input.click and over(kp,ks2) then it.listening=true; self._settingsListen=true end
+            else
+                poolHide(pool,wid.."_lbl"); poolHide(pool,wid.."_kbg"); poolHide(pool,wid.."_kbb"); poolHide(pool,wid.."_kbtx")
+            end
             if it.listening and self._settingsListen then
                 for kc=1,255 do
                     if kc~=1 and kc~=2 and Input:keyClick(kc) then
-                        if kc~=0x1B then self.MenuKey=kc;self:Notify("Key: "..keyName(kc),self.Title,3) end
-                        it.listening=false;self._settingsListen=false;break
+                        if kc~=0x1B then self.MenuKey=kc; self:Notify("Key: "..keyName(kc),self.Title,3) end
+                        it.listening=false; self._settingsListen=false; break
                     end
                 end
             end
-            h=24
+            h = 24
 
-        elseif it.type=="settings_kill" then
-            local BTN_H=24
-            local bp=Vector2.new(wx,wy); local bs=Vector2.new(iW,BTN_H); local hov=over(bp,bs)
-            poolAdd(pool,wid.."_btn", "Square",{Position=bp,Size=bs,Filled=true, Color=hov and T.RedDark or T.Surface1,Visible=true,ZIndex=6})
-            poolAdd(pool,wid.."_btnb","Square",{Position=bp,Size=bs,Filled=false,Color=hov and T.Red or T.Border0,Thickness=1,Visible=true,ZIndex=7})
-            local _bw=textW(it.label,13)
-            poolAdd(pool,wid.."_btnt","Text",{Position=Vector2.new(wx+iW/2-_bw/2,wy+5),Text=it.label,Size=13,Font=FONT,Color=T.Red,Center=false,Outline=false,Visible=true,ZIndex=7})
-            if Input.click and hov then self:Notify("Script killed.",self.Title,2);self._running=false end
-            h=BTN_H+4
+        elseif it.type == "settings_kill" then
+            local BTN_H = 24
+            local bp = Vector2.new(wx,wy); local bs = Vector2.new(iW,BTN_H); local hov = visible and over(bp,bs)
+            if visible then
+                poolAdd(pool, wid.."_btn",  "Square", {Position=bp, Size=bs, Filled=true,  Color=hov and T.RedDark or T.Surface1, Visible=true, ZIndex=6})
+                poolAdd(pool, wid.."_btnb", "Square", {Position=bp, Size=bs, Filled=false, Color=hov and T.Red or T.Border0, Thickness=1, Visible=true, ZIndex=7})
+                local _bw = textW(it.label,13)
+                poolAdd(pool, wid.."_btnt", "Text",   {Position=Vector2.new(wx+iW/2-_bw/2,wy+5), Text=it.label, Size=13, Font=F, Color=T.Red, Center=false, Outline=false, Visible=true, ZIndex=7})
+                if Input.click and hov then self:Notify("Script killed.",self.Title,2); self._running=false end
+            else
+                poolHide(pool,wid.."_btn"); poolHide(pool,wid.."_btnb"); poolHide(pool,wid.."_btnt")
+            end
+            h = BTN_H + 4
         end
+
         return h
     end
 
     -- ── Render ───────────────────────────────────────────────────────────────
     function WIN:_render()
-        local pool=self._pool; local pos=self._pos; local sz=self.Size
-        local t=tick(); local F=Drawing.Fonts.Plex
+        local pool = self._pool; local pos = self._pos; local sz = self.Size
+        local t = tick(); local F = Drawing.Fonts.Plex
 
         if not self._open then
             poolDestroy(pool)
+            poolDestroy(self._overlayPool)
             for i=1,self._snakeCount do self._snakeLines[i].Visible=false end
             renderNotifs(); return
         end
@@ -734,39 +833,39 @@ function GalaxLib:CreateWindow(opts)
         poolBegin(pool)
 
         -- Drag (title bar)
-        local TH=38
-        if Input.click and over(pos,Vector2.new(sz.X,TH)) and not self._drag and not self._resize then
-            self._drag=mpos()-pos
+        local TH = 38
+        if Input.click and over(pos, Vector2.new(sz.X,TH)) and not self._drag and not self._resize then
+            self._drag = mpos()-pos
         end
-        if not Input.held then self._drag=nil end
-        if self._drag then self._pos=mpos()-self._drag; pos=self._pos end
+        if not Input.held then self._drag = nil end
+        if self._drag then self._pos = mpos()-self._drag; pos = self._pos end
 
-        -- Resize handle (bottom-right triangle)
-        local rSz=Vector2.new(14,14)
-        local rPos=pos+sz-rSz
+        -- Resize handle
+        local rSz = Vector2.new(14,14)
+        local rPos = pos+sz-rSz
         poolAdd(pool,"rsz","Triangle",{
             PointA=Vector2.new(rPos.X+rSz.X,rPos.Y),
             PointB=Vector2.new(rPos.X+rSz.X,rPos.Y+rSz.Y),
             PointC=Vector2.new(rPos.X,rPos.Y+rSz.Y),
             Filled=true,Color=T.Border1,Visible=true,ZIndex=8})
-        if Input.click and over(rPos,rSz) then self._resize=mpos();self._resizeBase=sz end
+        if Input.click and over(rPos,rSz) then self._resize=mpos(); self._resizeBase=sz end
         if not Input.held then self._resize=nil end
         if self._resize then
-            local d=mpos()-self._resize
-            self.Size=Vector2.new(
-                math.max(self._minSz.X,self._resizeBase.X+d.X),
-                math.max(self._minSz.Y,self._resizeBase.Y+d.Y)); sz=self.Size
+            local d = mpos()-self._resize
+            self.Size = Vector2.new(
+                math.max(self._minSz.X, self._resizeBase.X+d.X),
+                math.max(self._minSz.Y, self._resizeBase.Y+d.Y)); sz = self.Size
         end
 
         -- Window chrome
-        poolAdd(pool,"wbg","Square",{Position=pos,Size=sz,Filled=true, Color=T.Body,   Visible=true,ZIndex=1})
-        poolAdd(pool,"wbd","Square",{Position=pos,Size=sz,Filled=false,Color=T.Border0,Thickness=1,Visible=true,ZIndex=2})
+        poolAdd(pool,"wbg","Square",{Position=pos,Size=sz,Filled=true, Color=T.Body,    Visible=true,ZIndex=1})
+        poolAdd(pool,"wbd","Square",{Position=pos,Size=sz,Filled=false,Color=T.Border0, Thickness=1, Visible=true,ZIndex=2})
         poolAdd(pool,"tbg","Square",{Position=pos,Size=Vector2.new(sz.X,TH),Filled=true,Color=T.Surface0,Visible=true,ZIndex=2})
         poolAdd(pool,"tln","Square",{Position=pos+Vector2.new(0,TH),Size=Vector2.new(sz.X,2),Filled=true,Color=T.Accent,Visible=true,ZIndex=3})
         poolAdd(pool,"ttx","Text",  {Position=pos+Vector2.new(12,11),Text=self.Title,Size=16,Font=F,Color=T.Accent,Outline=true,Visible=true,ZIndex=3})
 
         -- Watermark
-        local wm=self.Title.."  |  "..keyName(self.MenuKey).." to toggle"
+        local wm = self.Title.."  |  "..keyName(self.MenuKey).." to toggle"
         poolAdd(pool,"wmbg","Square",{Position=pos-Vector2.new(0,21),Size=Vector2.new(textW(wm,12)+14,18),Filled=true,Color=T.Surface0,Visible=true,ZIndex=1})
         poolAdd(pool,"wmtx","Text",  {Position=pos-Vector2.new(-5,17),Text=wm,Size=12,Font=F,Color=T.SubText,Outline=false,Visible=true,ZIndex=2})
 
@@ -782,23 +881,24 @@ function GalaxLib:CreateWindow(opts)
         -- Tabs
         local tabY=TH+4; local tabH=26; local tabX=10
         for i,tab in ipairs(self._tabs) do
-            local tw=textW(tab._name,13)+24
-            local tpos=pos+Vector2.new(tabX,tabY); local tsz=Vector2.new(tw,tabH)
-            local open=(self._openTab==tab)
+            local tw   = textW(tab._name,13)+24
+            local tpos = pos+Vector2.new(tabX,tabY); local tsz = Vector2.new(tw,tabH)
+            local open = (self._openTab==tab)
             poolAdd(pool,"tabbg"..i, "Square",{Position=tpos,Size=tsz,Filled=true,Color=open and T.Surface1 or T.Surface0,Visible=true,ZIndex=3})
-            local _tw=textW(tab._name,13)
-            poolAdd(pool,"tabtx"..i, "Text",{Position=Vector2.new(tpos.X+tw/2-_tw/2,tpos.Y+6),Text=tab._name,Size=13,Font=F,Color=open and T.Text or T.SubText,Center=false,Outline=false,Visible=true,ZIndex=4})
+            local _tw  = textW(tab._name,13)
+            poolAdd(pool,"tabtx"..i, "Text",  {Position=Vector2.new(tpos.X+tw/2-_tw/2,tpos.Y+6),Text=tab._name,Size=13,Font=F,Color=open and T.Text or T.SubText,Center=false,Outline=false,Visible=true,ZIndex=4})
             if open then poolAdd(pool,"tabul"..i,"Square",{Position=tpos+Vector2.new(0,tabH-2),Size=Vector2.new(tw,2),Filled=true,Color=T.Accent,Visible=true,ZIndex=4})
             else poolHide(pool,"tabul"..i) end
             if Input.click and over(tpos,tsz) then
-                self._openTab=tab; self._openDropId=nil; self._textboxTarget=nil; self._cpTarget=nil
+                self._openTab=tab; self._openDropId=nil; self._openDropData=nil
+                self._textboxTarget=nil; self._cpTarget=nil
                 self._scrollY=0; self._scrollVel=0
             end
-            tabX=tabX+tw+5
+            tabX = tabX+tw+5
         end
-        if not self._openTab then poolFlush(pool);renderNotifs();return end
+        if not self._openTab then poolFlush(pool); renderNotifs(); return end
 
-        -- Content area — 2-column layout, scrollable
+        -- Content area
         local contTop = TH + tabH + 10
         local padX    = 10
         local gap     = 8
@@ -807,8 +907,43 @@ function GalaxLib:CreateWindow(opts)
         local iW      = colW - 14
         local contH   = sz.Y - contTop - 8
 
-        -- Scroll wheel over content area
-        if over(pos + Vector2.new(padX, contTop), Vector2.new(contW, contH)) and Input.scroll ~= 0 then
+        -- FIX 3: Update clip region so widgets know what's visible
+        self._contClip = {
+            top    = pos.Y + contTop,
+            bottom = pos.Y + contTop + contH,
+            left   = pos.X + padX,
+            right  = pos.X + padX + contW,
+        }
+
+        -- FIX: Close dropdown if click happened outside both header and overlay list
+        if Input.click and self._openDropId ~= nil and self._openDropData ~= nil then
+            local it = self._openDropData
+            local ddP = it._overlayAnchor
+            if ddP and it._overlayWidth then
+                local ddS    = Vector2.new(it._overlayWidth, 22)
+                local listH  = math.min(it.maxVisible, #it.options)*20 + 4 + 28
+                local listP  = ddP + Vector2.new(0, 24+2)
+                local lSz    = Vector2.new(it._overlayWidth, listH)
+                if not over(ddP, ddS) and not over(listP, lSz) then
+                    self._openDropId = nil; self._openDropData = nil
+                end
+            end
+        end
+
+        -- Scroll wheel over content (only if no dropdown is open and scroll not consumed by it)
+        local ddConsumedScroll = false
+        if self._openDropData ~= nil then
+            local it = self._openDropData
+            local ddP = it._overlayAnchor
+            if ddP and it._overlayWidth then
+                local listH = math.min(it.maxVisible,#it.options)*20+4+28
+                local listP = ddP+Vector2.new(0,26)
+                if over(listP, Vector2.new(it._overlayWidth, listH)) then
+                    ddConsumedScroll = true
+                end
+            end
+        end
+        if not ddConsumedScroll and over(pos+Vector2.new(padX,contTop), Vector2.new(contW,contH)) and Input.scroll~=0 then
             self._scrollVel = self._scrollVel + Input.scroll * 18
         end
         self._scrollVel = self._scrollVel * 0.78
@@ -818,18 +953,18 @@ function GalaxLib:CreateWindow(opts)
         local function estSecH(sec)
             local sh = 22
             if not sec._collapsed then
-                for _, it in ipairs(sec._widgets) do
-                    if     it.type=="separator"                               then sh=sh+18
-                    elseif it.type=="label"                                   then sh=sh+26
-                    elseif it.type=="toggle"                                  then sh=sh+28
-                    elseif it.type=="button"                                  then sh=sh+28
-                    elseif it.type=="slider"                                  then sh=sh+40
-                    elseif it.type=="dropdown" or it.type=="multidropdown"    then sh=sh+48
-                    elseif it.type=="colorpicker"                             then sh=sh+(it._open and 160 or 30)
-                    elseif it.type=="keybind"                                 then sh=sh+30
-                    elseif it.type=="textbox"                                 then sh=sh+50
-                    elseif it.type=="settings_keybind"                        then sh=sh+30
-                    elseif it.type=="settings_kill"                           then sh=sh+28
+                for _,it in ipairs(sec._widgets) do
+                    if     it.type=="separator"                            then sh=sh+18
+                    elseif it.type=="label"                                then sh=sh+26
+                    elseif it.type=="toggle"                               then sh=sh+28
+                    elseif it.type=="button"                               then sh=sh+28
+                    elseif it.type=="slider"                               then sh=sh+40
+                    elseif it.type=="dropdown" or it.type=="multidropdown" then sh=sh+48  -- fixed, no expansion
+                    elseif it.type=="colorpicker"                          then sh=sh+(it._open and 160 or 30)
+                    elseif it.type=="keybind"                              then sh=sh+30
+                    elseif it.type=="textbox"                              then sh=sh+50
+                    elseif it.type=="settings_keybind"                     then sh=sh+30
+                    elseif it.type=="settings_kill"                        then sh=sh+28
                     else sh=sh+26 end
                 end
             end
@@ -847,7 +982,7 @@ function GalaxLib:CreateWindow(opts)
 
         -- Measure total scrollable height
         local totalH = 0
-        for _, row in ipairs(rows) do
+        for _,row in ipairs(rows) do
             local h1 = estSecH(row[1])
             local h2 = row[2] and estSecH(row[2]) or 0
             totalH = totalH + math.max(h1, h2) + gap
@@ -864,24 +999,23 @@ function GalaxLib:CreateWindow(opts)
             poolAdd(pool,"sc_bar","Square",{Position=Vector2.new(sbX,pos.Y+sbY),    Size=Vector2.new(SBW,sbH), Filled=true, Color=T.Accent, Visible=true,ZIndex=6})
         end
 
-        -- Draw a section; returns actual rendered height
+        -- Draw a section
         local function drawSec(sec, sid, absX, relY)
             local absY = pos.Y + relY
 
-            -- Section header
-            local hdrP = Vector2.new(absX + 4, absY + 4)
+            local hdrP = Vector2.new(absX+4, absY+4)
             poolAdd(pool, sid.."_hdr", "Text", {
                 Position=hdrP, Text=sec._name,
                 Size=11, Font=F, Color=T.SubText, Outline=false, Visible=true, ZIndex=6
             })
-            if Input.click and over(hdrP - Vector2.new(0,2), Vector2.new(colW, 14)) then
+            if Input.click and over(hdrP-Vector2.new(0,2), Vector2.new(colW,14)) then
                 sec._collapsed = not sec._collapsed
             end
 
             local wY = relY + 20
             if not sec._collapsed then
-                for wi, it in ipairs(sec._widgets) do
-                    local consumed = self:_widget(it, pool, sid.."w"..wi, absX + 7, pos.Y + wY, iW, F)
+                for wi,it in ipairs(sec._widgets) do
+                    local consumed = self:_widget(it, pool, sid.."w"..wi, absX+7, pos.Y+wY, iW, F)
                     wY = wY + consumed + 6
                 end
             end
@@ -894,7 +1028,7 @@ function GalaxLib:CreateWindow(opts)
         end
 
         local rowY = contTop - self._scrollY
-        for ri, row in ipairs(rows) do
+        for ri,row in ipairs(rows) do
             local xL = pos.X + padX
             local xR = pos.X + padX + colW + gap
             local h1 = drawSec(row[1], "r"..ri.."a", xL, rowY)
@@ -903,27 +1037,33 @@ function GalaxLib:CreateWindow(opts)
         end
 
         poolFlush(pool)
+
+        -- FIX 1: Render dropdown overlay last (on top of everything)
+        self:_renderDropdownOverlay(F)
+
         renderNotifs()
     end
 
     -- ── Main loop ─────────────────────────────────────────────────────────
-    WIN:_buildSettings()  -- run synchronously so AddSection is available immediately
+    WIN:_buildSettings()
     task.spawn(function()
         while WIN._running do
             task.wait()
             if not isrbxactive() then continue end
             Input:update()
             if Input:keyClick(WIN.MenuKey) then
-                WIN._open=not WIN._open; setrobloxinput(not WIN._open)
+                WIN._open = not WIN._open; setrobloxinput(not WIN._open)
                 if not WIN._open then
-                    WIN._openDropId=nil; WIN._textboxTarget=nil
-                    WIN._keybindTarget=nil; WIN._settingsListen=false; WIN._cpTarget=nil
+                    WIN._openDropId=nil; WIN._openDropData=nil
+                    WIN._textboxTarget=nil; WIN._keybindTarget=nil
+                    WIN._settingsListen=false; WIN._cpTarget=nil
                 end
             end
             WIN:_render()
         end
         setrobloxinput(true)
         poolDestroy(WIN._pool)
+        poolDestroy(WIN._overlayPool)
         poolDestroy(_notifPool)
         for i=1,WIN._snakeCount do WIN._snakeLines[i]:Remove() end
     end)
