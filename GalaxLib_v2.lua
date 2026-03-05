@@ -760,84 +760,108 @@ function GalaxLib:CreateWindow(opts)
         end
         if not self._openTab then poolFlush(pool);renderNotifs();return end
 
-        -- Content area — single column, full width, scrollable
-        local contTop=TH+tabH+10
-        local padX=12; local secW=sz.X-padX*2; local iW=secW-16
-        local contH=sz.Y-contTop-8
+        -- Content area — 2-column layout, scrollable
+        local contTop = TH + tabH + 10
+        local padX    = 10
+        local gap     = 8
+        local contW   = sz.X - padX * 2
+        local colW    = (contW - gap) / 2
+        local iW      = colW - 14
+        local contH   = sz.Y - contTop - 8
 
-        -- Scroll momentum
-        local contPos=pos+Vector2.new(padX,contTop)
-        if over(contPos,Vector2.new(secW,contH)) and Input.scroll~=0 then
-            self._scrollVel=self._scrollVel+Input.scroll*16
+        -- Scroll wheel over content area
+        if over(pos + Vector2.new(padX, contTop), Vector2.new(contW, contH)) and Input.scroll ~= 0 then
+            self._scrollVel = self._scrollVel + Input.scroll * 18
         end
-        self._scrollVel=self._scrollVel*0.80
-        self._scrollY=math.max(0,self._scrollY+self._scrollVel)
+        self._scrollVel = self._scrollVel * 0.78
+        self._scrollY   = math.max(0, self._scrollY + self._scrollVel)
 
-        -- Measure total content height for scroll clamping
-        local totalH=0
-        for _,sec in ipairs(self._openTab._sections) do
-            local sh=20  -- header
+        -- Estimate section height
+        local function estSecH(sec)
+            local sh = 22
             if not sec._collapsed then
-                for _,it in ipairs(sec._widgets) do
-                    if it.type=="separator" then sh=sh+18
-                    elseif it.type=="label" then sh=sh+26
-                    elseif it.type=="toggle" then sh=sh+28
-                    elseif it.type=="button" then sh=sh+34
-                    elseif it.type=="slider" then sh=sh+40
-                    elseif it.type=="dropdown" or it.type=="multidropdown" then sh=sh+48
-                    elseif it.type=="colorpicker" then sh=sh+(it._open and 160 or 30)
-                    elseif it.type=="keybind" then sh=sh+30
-                    elseif it.type=="textbox" then sh=sh+50
-                    elseif it.type=="settings_keybind" then sh=sh+30
-                    elseif it.type=="settings_kill" then sh=sh+34
+                for _, it in ipairs(sec._widgets) do
+                    if     it.type=="separator"                               then sh=sh+18
+                    elseif it.type=="label"                                   then sh=sh+26
+                    elseif it.type=="toggle"                                  then sh=sh+28
+                    elseif it.type=="button"                                  then sh=sh+34
+                    elseif it.type=="slider"                                  then sh=sh+40
+                    elseif it.type=="dropdown" or it.type=="multidropdown"    then sh=sh+48
+                    elseif it.type=="colorpicker"                             then sh=sh+(it._open and 160 or 30)
+                    elseif it.type=="keybind"                                 then sh=sh+30
+                    elseif it.type=="textbox"                                 then sh=sh+50
+                    elseif it.type=="settings_keybind"                        then sh=sh+30
+                    elseif it.type=="settings_kill"                           then sh=sh+34
                     else sh=sh+26 end
                 end
             end
-            totalH=totalH+sh+20
+            return sh + 10
         end
-        self._scrollY=math.min(self._scrollY,math.max(0,totalH-contH))
+
+        -- Pair sections into 2-column rows
+        local secs = self._openTab._sections
+        local rows  = {}
+        local si = 1
+        while si <= #secs do
+            table.insert(rows, {secs[si], secs[si+1]})
+            si = si + 2
+        end
+
+        -- Measure total scrollable height
+        local totalH = 0
+        for _, row in ipairs(rows) do
+            local h1 = estSecH(row[1])
+            local h2 = row[2] and estSecH(row[2]) or 0
+            totalH = totalH + math.max(h1, h2) + gap
+        end
+        self._scrollY = math.min(self._scrollY, math.max(0, totalH - contH))
 
         -- Scrollbar
-        if totalH>contH then
-            local SBW=4; local sbX=pos.X+sz.X-SBW-2
-            local sbTrack=contH
-            local sbH=math.max(20,sbTrack*(contH/totalH))
-            local sbY=contTop+(self._scrollY/math.max(1,totalH-contH))*(sbTrack-sbH)
-            poolAdd(pool,"sc_trk","Square",{Position=Vector2.new(sbX,pos.Y+contTop),Size=Vector2.new(SBW,sbTrack),Filled=true,Color=T.Surface1,Visible=true,ZIndex=5})
-            poolAdd(pool,"sc_bar","Square",{Position=Vector2.new(sbX,pos.Y+sbY),    Size=Vector2.new(SBW,sbH),     Filled=true,Color=T.Accent, Visible=true,ZIndex=6})
+        if totalH > contH then
+            local SBW = 4
+            local sbX = pos.X + sz.X - SBW - 2
+            local sbH = math.max(20, contH * (contH / totalH))
+            local sbY = contTop + (self._scrollY / math.max(1, totalH - contH)) * (contH - sbH)
+            poolAdd(pool,"sc_trk","Square",{Position=Vector2.new(sbX,pos.Y+contTop),Size=Vector2.new(SBW,contH),Filled=true, Color=T.Surface1,Visible=true,ZIndex=5})
+            poolAdd(pool,"sc_bar","Square",{Position=Vector2.new(sbX,pos.Y+sbY),    Size=Vector2.new(SBW,sbH), Filled=true, Color=T.Accent, Visible=true,ZIndex=6})
         end
 
-        -- Sections
-        local drawY=contTop-self._scrollY
-        for si,sec in ipairs(self._openTab._sections) do
-            local sy=drawY; local sid="s"..si
-            local secX=pos.X+padX; local innerX=secX+8
+        -- Draw a section; returns actual rendered height
+        local function drawSec(sec, sid, absX, relY)
+            local absY = pos.Y + relY
 
-            -- Collapsible header
-            local hdrP=Vector2.new(secX+4,pos.Y+sy+4)
-            poolAdd(pool,sid.."_hdr","Text",{Position=hdrP,
-                Text=(sec._collapsed and "▶ " or "▼ ")..sec._name,
-                Size=11,Font=F,Color=T.SubText,Outline=false,Visible=true,ZIndex=6})
-            if Input.click and over(hdrP-Vector2.new(0,2),Vector2.new(secW,14)) then
-                sec._collapsed=not sec._collapsed
+            -- Section header
+            local hdrP = Vector2.new(absX + 4, absY + 4)
+            poolAdd(pool, sid.."_hdr", "Text", {
+                Position=hdrP, Text=sec._name,
+                Size=11, Font=F, Color=T.SubText, Outline=false, Visible=true, ZIndex=6
+            })
+            if Input.click and over(hdrP - Vector2.new(0,2), Vector2.new(colW, 14)) then
+                sec._collapsed = not sec._collapsed
             end
 
-            local wY=sy+20
+            local wY = relY + 20
             if not sec._collapsed then
-                for wi,it in ipairs(sec._widgets) do
-                    local consumed=self:_widget(it,pool,sid.."w"..wi,innerX,pos.Y+wY,iW,F)
-                    wY=wY+consumed+6
+                for wi, it in ipairs(sec._widgets) do
+                    local consumed = self:_widget(it, pool, sid.."w"..wi, absX + 7, pos.Y + wY, iW, F)
+                    wY = wY + consumed + 6
                 end
             end
 
-            local secH=wY-sy+8
-            -- Draw section bg behind content (ZIndex=4 so it sits under widgets)
-            poolAdd(pool,sid.."_bg", "Square",{Position=Vector2.new(secX,pos.Y+sy),Size=Vector2.new(secW,secH),Filled=true, Color=T.Surface0,Visible=true,ZIndex=4})
-            poolAdd(pool,sid.."_bgb","Square",{Position=Vector2.new(secX,pos.Y+sy),Size=Vector2.new(secW,secH),Filled=false,Color=T.Border0,Thickness=1,Visible=true,ZIndex=5})
-            -- Re-elevate header text over bg
-            local hdrObj=poolGet(pool,sid.."_hdr"); if hdrObj then hdrObj.ZIndex=6 end
+            local secH = wY - relY + 8
+            poolAdd(pool, sid.."_bg",  "Square", {Position=Vector2.new(absX,absY), Size=Vector2.new(colW,secH), Filled=true,  Color=T.Surface0, Visible=true, ZIndex=4})
+            poolAdd(pool, sid.."_bgb", "Square", {Position=Vector2.new(absX,absY), Size=Vector2.new(colW,secH), Filled=false, Color=T.Border0,  Thickness=1,  Visible=true, ZIndex=5})
+            local hdrObj = poolGet(pool, sid.."_hdr"); if hdrObj then hdrObj.ZIndex=6 end
+            return secH
+        end
 
-            drawY=drawY+secH+10
+        local rowY = contTop - self._scrollY
+        for ri, row in ipairs(rows) do
+            local xL = pos.X + padX
+            local xR = pos.X + padX + colW + gap
+            local h1 = drawSec(row[1], "r"..ri.."a", xL, rowY)
+            local h2 = row[2] and drawSec(row[2], "r"..ri.."b", xR, rowY) or 0
+            rowY = rowY + math.max(h1, h2) + gap
         end
 
         poolFlush(pool)
